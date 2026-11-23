@@ -1,9 +1,13 @@
 
 package dk.pureplayer
 
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -13,20 +17,33 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Equalizer
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.documentfile.provider.DocumentFile
 import androidx.media3.common.MediaItem
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.Executor
+
+data class Track(
+    val name: String,
+    val uri: Uri
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,23 +54,151 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+suspend fun scanMusicFolder(uri: Uri): List<Track> =
+    withContext(Dispatchers.IO) {
+        val found = mutableListOf<Track>()
+
+        fun scan(folder: DocumentFile) {
+            folder.listFiles().forEach { file ->
+                if (file.isDirectory) {
+                    scan(file)
+                } else {
+                    val name = file.name ?: return@forEach
+
+                    if (name.endsWith(".mp3", true) ||
+                        name.endsWith(".flac", true)
+                    ) {
+                        found.add(Track(name, file.uri))
+                    }
+                }
+            }
+        }
+
+        try {
+            DocumentFile.fromTreeUri(
+                PurePlayerApplicationContext.context,
+                uri
+            )?.let { scan(it) }
+        } catch (_: Exception) {
+        }
+
+        found.sortedBy { it.name.lowercase() }
+    }
+
+object PurePlayerApplicationContext {
+    lateinit var context: Context
+}
+
 @Composable
 fun PurePlayerScreen() {
     val context = LocalContext.current
-    val player = remember { ExoPlayer.Builder(context).build() }
+    val preferences = remember {
+        context.getSharedPreferences("pureplayer", Context.MODE_PRIVATE)
+    }
+    val scope = rememberCoroutineScope()
 
     var tracks by remember {
-        mutableStateOf(listOf<Pair<String, Uri>>())
+        mutableStateOf(listOf<Track>())
     }
-    var current by remember { mutableIntStateOf(-1) }
-    var playing by remember { mutableStateOf(false) }
+    var current by rememberSaveable {
+        mutableIntStateOf(-1)
+    }
+    var playing by remember {
+        mutableStateOf(false)
+    }
+    var loading by remember {
+        mutableStateOf(false)
+    }
+    var selectedTab by rememberSaveable {
+        mutableIntStateOf(0)
+    }
+    var searchText by remember {
+        mutableStateOf("")
+    }
+    var libraryLoaded by remember {
+        mutableStateOf(false)
+    }
 
-    DisposableEffect(Unit) {
-        onDispose { player.release() }
+    val filteredTracks = remember(tracks, searchText) {
+        tracks.filter {
+            it.name.contains(searchText, ignoreCase = true)
+        }
+    }
+
+    val executor = remember {
+        Executor { command ->
+            Handler(Looper.getMainLooper()).post(command)
+        }
+    }
+
+    val controllerFuture = remember {
+        val token = SessionToken(
+            context,
+            ComponentName(context, PlaybackService::class.java)
+        )
+        MediaController.Builder(context, token).buildAsync()
+    }
+
+    var controller by remember {
+        mutableStateOf<MediaController?>(null)
+    }
+
+    DisposableEffect(controllerFuture) {
+        controllerFuture.addListener({
+            try {
+                controller = controllerFuture.get()
+            } catch (_: Exception) {
+                controller = null
+            }
+        }, executor)
+
+        onDispose {
+            MediaController.releaseFuture(controllerFuture)
+        }
+    }
+
+    DisposableEffect(controller) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                playing = isPlaying
+            }
+
+            override fun onMediaItemTransition(
+                mediaItem: MediaItem?,
+                reason: Int
+            ) {
+                current = controller?.currentMediaItemIndex ?: -1
+            }
+        }
+
+        controller?.addListener(listener)
+
+        onDispose {
+            controller?.removeListener(listener)
+        }
+    }
+
+    fun playTrack(index: Int) {
+        val mediaController = controller ?: return
+        if (index !in tracks.indices) return
+
+        current = index
+
+        mediaController.setMediaItems(
+            tracks.map { MediaItem.fromUri(it.uri) },
+            index,
+            0L
+        )
+        mediaController.prepare()
+        mediaController.play()
+
+        preferences.edit()
+            .putString("last_track", tracks[index].uri.toString())
+            .apply()
     }
 
     val folderPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
+        ActivityResultContracts.OpenDocumentTree()
     ) { treeUri ->
         if (treeUri != null) {
             try {
@@ -64,168 +209,283 @@ fun PurePlayerScreen() {
             } catch (_: Exception) {
             }
 
-            val found = mutableListOf<Pair<String, Uri>>()
+            preferences.edit()
+                .putString("music_folder", treeUri.toString())
+                .apply()
 
-            fun scan(folder: DocumentFile) {
-                folder.listFiles().forEach { file ->
-                    if (file.isDirectory) {
-                        scan(file)
-                    } else {
-                        val name = file.name ?: return@forEach
+            scope.launch {
+                loading = true
+                tracks = scanMusicFolder(treeUri)
+                libraryLoaded = true
+                loading = false
 
-                        if (name.endsWith(".mp3", true) ||
-                            name.endsWith(".flac", true)
-                        ) {
-                            found.add(name to file.uri)
-                        }
-                    }
+                val lastTrack = preferences.getString(
+                    "last_track", null
+                )
+
+                current = tracks.indexOfFirst {
+                    it.uri.toString() == lastTrack
                 }
             }
-
-            DocumentFile.fromTreeUri(context, treeUri)?.let {
-                scan(it)
-            }
-
-            tracks = found.sortedBy { it.first.lowercase() }
-            current = -1
-            player.stop()
-            playing = false
         }
     }
 
-    fun playTrack(index: Int) {
-        if (index !in tracks.indices) return
+    LaunchedEffect(Unit) {
+        PurePlayerApplicationContext.context = context.applicationContext
 
-        current = index
-        player.setMediaItem(
-            MediaItem.fromUri(tracks[index].second)
+        val savedFolder = preferences.getString(
+            "music_folder", null
         )
-        player.prepare()
-        player.play()
-        playing = true
+
+        if (savedFolder != null) {
+            loading = true
+
+            tracks = scanMusicFolder(Uri.parse(savedFolder))
+            libraryLoaded = true
+
+            val lastTrack = preferences.getString(
+                "last_track", null
+            )
+
+            current = tracks.indexOfFirst {
+                it.uri.toString() == lastTrack
+            }
+
+            loading = false
+        }
     }
 
     MaterialTheme(colorScheme = darkColorScheme()) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
+        Scaffold(
+            bottomBar = {
+                NavigationBar {
+                    NavigationBarItem(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        icon = {
+                            Icon(
+                                Icons.Default.LibraryMusic,
+                                contentDescription = null
+                            )
+                        },
+                        label = { Text("Musik") }
+                    )
+
+                    NavigationBarItem(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        icon = {
+                            Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = null
+                            )
+                        },
+                        label = { Text("Afspiller") }
+                    )
+
+                    NavigationBarItem(
+                        selected = selectedTab == 2,
+                        onClick = { selectedTab = 2 },
+                        icon = {
+                            Icon(
+                                Icons.Default.Equalizer,
+                                contentDescription = null
+                            )
+                        },
+                        label = { Text("Equalizer") }
+                    )
+                }
+            }
+        ) { innerPadding ->
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(20.dp)
+                    .padding(innerPadding)
+                    .padding(horizontal = 18.dp, vertical = 12.dp)
             ) {
+
                 Text(
                     "PurePlayer",
                     style = MaterialTheme.typography.headlineLarge
                 )
 
-                Spacer(Modifier.height(6.dp))
+                when (selectedTab) {
 
-                Text("Din musik. Din telefon. Ingen abonnementer.")
+                    0 -> {
+                        Text("Din musik. Din telefon. Ingen abonnementer.")
 
-                Spacer(Modifier.height(22.dp))
+                        Spacer(Modifier.height(14.dp))
 
-                Button(
-                    onClick = { folderPicker.launch(null) }
-                ) {
-                    Icon(
-                        Icons.Default.FolderOpen,
-                        contentDescription = null
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Vælg musikmappe")
-                }
+                        Button(
+                            onClick = { folderPicker.launch(null) }
+                        ) {
+                            Text("Vælg musikmappe")
+                        }
 
-                Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(12.dp))
 
-                Text("${tracks.size} musikfiler fundet")
+                        OutlinedTextField(
+                            value = searchText,
+                            onValueChange = { searchText = it },
+                            label = { Text("Søg i musikken") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
 
-                Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(10.dp))
 
-                LazyColumn(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    itemsIndexed(tracks) { index, track ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    playTrack(index)
+                        Text(
+                            when {
+                                loading -> "Indlæser musik..."
+                                else -> "${tracks.size} musikfiler fundet"
+                            }
+                        )
+
+                        if (!libraryLoaded && !loading) {
+                            Text("Vælg en musikmappe for at begynde.")
+                        }
+
+                        LazyColumn(
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            itemsIndexed(filteredTracks) { _, track ->
+                                val originalIndex =
+                                    tracks.indexOf(track)
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            playTrack(originalIndex)
+                                            selectedTab = 1
+                                        }
+                                        .padding(vertical = 12.dp),
+                                    verticalAlignment =
+                                        Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        track.name,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 2
+                                    )
+
+                                    IconButton(
+                                        onClick = {
+                                            playTrack(originalIndex)
+                                        }
+                                    ) {
+                                        Icon(
+                                            Icons.Default.PlayArrow,
+                                            contentDescription = "Afspil"
+                                        )
+                                    }
                                 }
-                                .padding(vertical = 12.dp),
+
+                                HorizontalDivider()
+                            }
+                        }
+                    }
+
+                    1 -> {
+                        Spacer(Modifier.height(35.dp))
+
+                        Text(
+                            "AFSPILLER",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+
+                        Spacer(Modifier.height(35.dp))
+
+                        Text(
+                            if (current in tracks.indices) {
+                                tracks[current].name
+                            } else {
+                                "Ingen sang valgt"
+                            },
+                            style = MaterialTheme.typography.headlineSmall
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+
+                        Text(
+                            if (playing) "Afspiller nu" else "Klar"
+                        )
+
+                        Spacer(Modifier.height(40.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement =
+                                Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text(track.first)
-                                if (index == current) {
-                                    Text(
-                                        "Afspilles",
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
+                            IconButton(
+                                onClick = {
+                                    if (current > 0) {
+                                        playTrack(current - 1)
+                                    }
                                 }
+                            ) {
+                                Icon(
+                                    Icons.Default.SkipPrevious,
+                                    contentDescription = "Forrige"
+                                )
                             }
 
                             IconButton(
-                                onClick = { playTrack(index) }
+                                onClick = {
+                                    controller?.let {
+                                        if (it.isPlaying) {
+                                            it.pause()
+                                        } else if (current >= 0) {
+                                            it.play()
+                                        }
+                                    }
+                                }
                             ) {
                                 Icon(
-                                    Icons.Default.PlayArrow,
-                                    contentDescription = "Afspil"
+                                    if (playing) Icons.Default.Pause
+                                    else Icons.Default.PlayArrow,
+                                    contentDescription = "Afspil eller pause"
+                                )
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    if (current + 1 < tracks.size) {
+                                        playTrack(current + 1)
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    Icons.Default.SkipNext,
+                                    contentDescription = "Næste"
                                 )
                             }
                         }
-
-                        HorizontalDivider()
                     }
-                }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = {
-                            if (current > 0) playTrack(current - 1)
-                        }
-                    ) {
-                        Icon(
-                            Icons.Default.SkipPrevious,
-                            contentDescription = "Forrige"
+                    2 -> {
+                        Spacer(Modifier.height(24.dp))
+
+                        Text(
+                            "10-BÅNDS EQUALIZER",
+                            style = MaterialTheme.typography.titleLarge
                         )
-                    }
 
-                    IconButton(
-                        onClick = {
-                            if (player.isPlaying) {
-                                player.pause()
-                                playing = false
-                            } else if (current >= 0) {
-                                player.play()
-                                playing = true
-                            }
-                        }
-                    ) {
-                        Icon(
-                            if (playing) Icons.Default.Pause
-                            else Icons.Default.PlayArrow,
-                            contentDescription = "Afspil eller pause"
+                        Spacer(Modifier.height(18.dp))
+
+                        Text(
+                            "Equalizeren er under opbygning."
                         )
-                    }
 
-                    IconButton(
-                        onClick = {
-                            if (current + 1 < tracks.size) {
-                                playTrack(current + 1)
-                            }
-                        }
-                    ) {
-                        Icon(
-                            Icons.Default.SkipNext,
-                            contentDescription = "Næste"
+                        Spacer(Modifier.height(8.dp))
+
+                        Text(
+                            "Vi kobler de 10 frekvensbånd direkte " +
+                            "til lydmotoren i næste trin. " +
+                            "Indtil da ændres lyden ikke."
                         )
                     }
                 }
