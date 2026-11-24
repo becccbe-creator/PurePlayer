@@ -44,8 +44,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
+import androidx.media3.cast.MediaRouteButton
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import kotlinx.coroutines.Dispatchers
@@ -258,6 +260,7 @@ fun AlbumArtwork(
     }
 }
 
+@OptIn(UnstableApi::class)
 @Composable
 fun PurePlayerScreen() {
 
@@ -635,16 +638,12 @@ fun PurePlayerScreen() {
                     TextButton(
                         onClick = {
                             showExitDialog = false
-
-                            // Stop musikafspilningen
                             controller?.stop()
 
-                            // Luk afspilningstjenesten
                             context.stopService(
                                 Intent(context, PlaybackService::class.java)
                             )
 
-                            // Luk PurePlayer
                             (context as? Activity)?.finish()
                         }
                     ) {
@@ -1209,6 +1208,25 @@ fun PurePlayerScreen() {
                             "AFSPILLER",
                             style = MaterialTheme.typography.titleMedium
                         )
+
+                        Spacer(Modifier.height(12.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Vælg afspilningsenhed",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.titleMedium
+                            )
+
+                            MediaRouteButton(
+                                modifier = Modifier.size(48.dp)
+                            )
+                        }
+
+                        Spacer(Modifier.height(12.dp))
 
                         Spacer(Modifier.height(18.dp))
 
