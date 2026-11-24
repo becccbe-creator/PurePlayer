@@ -295,11 +295,6 @@ private fun createNetworkMediaItem(
         .build()
 }
 
-/*
- * Finder først nummeret via det oprindelige medie-ID eller
- * den lokale streamadresse. Hvis Cast ikke sender disse
- * oplysninger, forsøger vi at matche metadata.
- */
 private fun findTrackIndex(
     mediaItem: MediaItem?,
     tracks: List<LibraryTrack>
@@ -514,6 +509,7 @@ fun PurePlayerScreen() {
     }
 
     val latestTracks by rememberUpdatedState(tracks)
+    val latestCurrent by rememberUpdatedState(current)
 
     DisposableEffect(controller) {
 
@@ -526,12 +522,9 @@ fun PurePlayerScreen() {
                 latestTracks
             )
 
-            /*
-             * Hvis Cast endnu ikke har sendt brugbare metadata,
-             * beholder vi det sidst kendte nummer.
-             * Vi falder ikke tilbage til køens position 0.
-             */
-            if (trackIndex >= 0 && trackIndex != current) {
+            if (trackIndex >= 0 &&
+                trackIndex != latestCurrent
+            ) {
 
                 current = trackIndex
 
@@ -1483,19 +1476,10 @@ fun PurePlayerScreen() {
 
                             IconButton(
                                 onClick = {
-
-                                    val queuePosition =
-                                        queueIndices.indexOf(current)
-
-                                    if (queuePosition > 0) {
-
-                                        val previousIndex =
-                                            queueIndices[queuePosition - 1]
-
-                                        playTrackInQueue(
-                                            previousIndex,
-                                            queueIndices
-                                        )
+                                    controller?.let { player ->
+                                        if (player.hasPreviousMediaItem()) {
+                                            player.seekToPreviousMediaItem()
+                                        }
                                     }
                                 }
                             ) {
@@ -1537,21 +1521,10 @@ fun PurePlayerScreen() {
 
                             IconButton(
                                 onClick = {
-
-                                    val queuePosition =
-                                        queueIndices.indexOf(current)
-
-                                    if (queuePosition >= 0 &&
-                                        queuePosition + 1 < queueIndices.size
-                                    ) {
-
-                                        val nextIndex =
-                                            queueIndices[queuePosition + 1]
-
-                                        playTrackInQueue(
-                                            nextIndex,
-                                            queueIndices
-                                        )
+                                    controller?.let { player ->
+                                        if (player.hasNextMediaItem()) {
+                                            player.seekToNextMediaItem()
+                                        }
                                     }
                                 }
                             ) {
