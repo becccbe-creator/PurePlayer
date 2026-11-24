@@ -295,6 +295,61 @@ private fun createNetworkMediaItem(
         .build()
 }
 
+/*
+ * Finder først nummeret via det oprindelige medie-ID eller
+ * den lokale streamadresse. Hvis Cast ikke sender disse
+ * oplysninger, forsøger vi at matche metadata.
+ */
+private fun findTrackIndex(
+    mediaItem: MediaItem?,
+    tracks: List<LibraryTrack>
+): Int {
+
+    if (mediaItem == null) return -1
+
+    val mediaId = mediaItem.mediaId
+
+    val streamUri = mediaItem.localConfiguration
+        ?.uri
+        ?.toString()
+
+    val originalUri = streamUri?.let {
+        PlaybackService.getOriginalUri(it)?.toString()
+    }
+
+    val directMatch = tracks.indexOfFirst { track ->
+        track.uri.toString() == mediaId ||
+        track.uri.toString() == originalUri
+    }
+
+    if (directMatch >= 0) {
+        return directMatch
+    }
+
+    val metadata = mediaItem.mediaMetadata
+
+    val title = metadata.title?.toString()?.trim()
+    val artist = metadata.artist?.toString()?.trim()
+    val album = metadata.albumTitle?.toString()?.trim()
+
+    if (title.isNullOrBlank()) {
+        return -1
+    }
+
+    return tracks.indexOfFirst { track ->
+
+        val titleMatches = track.title.equals(title, true)
+
+        val artistMatches = artist.isNullOrBlank() ||
+            track.artist.equals(artist, true)
+
+        val albumMatches = album.isNullOrBlank() ||
+            track.album.equals(album, true)
+
+        titleMatches && artistMatches && albumMatches
+    }
+}
+
 @OptIn(UnstableApi::class)
 @Composable
 fun PurePlayerScreen() {
@@ -458,57 +513,93 @@ fun PurePlayerScreen() {
         }
     }
 
-    val latestQueueIndices by rememberUpdatedState(queueIndices)
     val latestTracks by rememberUpdatedState(tracks)
 
     DisposableEffect(controller) {
 
+        fun updateCurrentFromPlayer(player: Player) {
+
+            val mediaItem = player.currentMediaItem ?: return
+
+            val trackIndex = findTrackIndex(
+                mediaItem,
+                latestTracks
+            )
+
+            /*
+             * Hvis Cast endnu ikke har sendt brugbare metadata,
+             * beholder vi det sidst kendte nummer.
+             * Vi falder ikke tilbage til køens position 0.
+             */
+            if (trackIndex >= 0 && trackIndex != current) {
+
+                current = trackIndex
+
+                preferences.edit()
+                    .putString(
+                        "last_track",
+                        latestTracks[trackIndex].uri.toString()
+                    )
+                    .apply()
+            }
+        }
+
         val listener = object : Player.Listener {
 
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                playing = isPlaying
+            override fun onPlayWhenReadyChanged(
+                playWhenReady: Boolean,
+                reason: Int
+            ) {
+                playing = playWhenReady
+            }
+
+            override fun onPlaybackStateChanged(
+                playbackState: Int
+            ) {
+                val player = controller ?: return
+
+                playing = player.playWhenReady &&
+                    playbackState != Player.STATE_ENDED
+
+                updateCurrentFromPlayer(player)
             }
 
             override fun onMediaItemTransition(
                 mediaItem: MediaItem?,
                 reason: Int
             ) {
-                val mediaId = mediaItem?.mediaId
+                val player = controller ?: return
 
-                val streamUri = mediaItem
-                    ?.localConfiguration
-                    ?.uri
-                    ?.toString()
+                updateCurrentFromPlayer(player)
+            }
 
-                val originalUri = streamUri?.let {
-                    PlaybackService.getOriginalUri(it)?.toString()
-                }
+            override fun onMediaMetadataChanged(
+                mediaMetadata: MediaMetadata
+            ) {
+                val player = controller ?: return
 
-                val trackIndex = latestTracks.indexOfFirst {
-                    it.uri.toString() == mediaId ||
-                    it.uri.toString() == originalUri
-                }
+                updateCurrentFromPlayer(player)
+            }
 
-                if (trackIndex >= 0) {
-                    current = trackIndex
+            override fun onEvents(
+                player: Player,
+                events: Player.Events
+            ) {
+                playing = player.playWhenReady &&
+                    player.playbackState != Player.STATE_ENDED
 
-                    preferences.edit()
-                        .putString(
-                            "last_track",
-                            latestTracks[trackIndex].uri.toString()
-                        )
-                        .apply()
-
-                } else {
-                    val queuePosition =
-                        controller?.currentMediaItemIndex ?: -1
-
-                    current = latestQueueIndices.getOrNull(queuePosition) ?: -1
-                }
+                updateCurrentFromPlayer(player)
             }
         }
 
         controller?.addListener(listener)
+
+        controller?.let {
+            playing = it.playWhenReady &&
+                it.playbackState != Player.STATE_ENDED
+
+            updateCurrentFromPlayer(it)
+        }
 
         onDispose {
             controller?.removeListener(listener)
@@ -622,6 +713,8 @@ fun PurePlayerScreen() {
 
         mediaController.prepare()
         mediaController.play()
+
+        playing = true
 
         preferences.edit()
             .putString(
@@ -1419,9 +1512,11 @@ fun PurePlayerScreen() {
 
                                     controller?.let {
 
-                                        if (it.isPlaying) {
+                                        if (it.playWhenReady &&
+                                            it.playbackState != Player.STATE_ENDED
+                                        ) {
                                             it.pause()
-                                        } else if (current >= 0) {
+                                        } else {
                                             it.play()
                                         }
                                     }
