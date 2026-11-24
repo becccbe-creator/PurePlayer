@@ -7,7 +7,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import android.content.ContentResolver
 import android.content.Context
 import android.content.res.AssetFileDescriptor
 import java.io.BufferedReader
@@ -49,8 +48,7 @@ class PlaybackService : MediaSessionService() {
             .setLocalPlayer(exoPlayer)
             .build()
 
-        mediaSession = MediaSession.Builder(this, castPlayer)
-            .build()
+        mediaSession = MediaSession.Builder(this, castPlayer).build()
 
         startMusicServer()
     }
@@ -59,10 +57,6 @@ class PlaybackService : MediaSessionService() {
         controllerInfo: MediaSession.ControllerInfo
     ): MediaSession? = mediaSession
 
-    /**
-     * Opretter en adresse, som en Cast-enhed kan hente
-     * musikfilen fra via telefonens lokale Wi-Fi-netværk.
-     */
     private fun createStreamUrl(uri: Uri): String? {
         val port = serverSocket?.localPort ?: return null
         val ipAddress = getLocalWifiAddress() ?: return null
@@ -71,6 +65,15 @@ class PlaybackService : MediaSessionService() {
         musicFiles[token] = uri
 
         return "http://$ipAddress:$port/stream/$token"
+    }
+
+    private fun findOriginalUri(streamUrl: String): Uri? {
+        return try {
+            val token = Uri.parse(streamUrl).lastPathSegment ?: return null
+            musicFiles[token]
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun startMusicServer() {
@@ -102,7 +105,7 @@ class PlaybackService : MediaSessionService() {
                 start()
             }
 
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             serverSocket?.close()
             serverSocket = null
         }
@@ -126,8 +129,7 @@ class PlaybackService : MediaSessionService() {
             addresses
                 .filterIsInstance<Inet4Address>()
                 .firstOrNull {
-                    !it.isLoopbackAddress &&
-                    it.isSiteLocalAddress
+                    !it.isLoopbackAddress && it.isSiteLocalAddress
                 }
                 ?.hostAddress
 
@@ -138,17 +140,19 @@ class PlaybackService : MediaSessionService() {
 
     private fun handleConnection(socket: Socket) {
         socket.use { client ->
-
             try {
                 client.soTimeout = 15000
 
                 val reader = BufferedReader(
-                    InputStreamReader(client.getInputStream(), Charsets.UTF_8)
+                    InputStreamReader(
+                        client.getInputStream(),
+                        Charsets.UTF_8
+                    )
                 )
 
                 val requestLine = reader.readLine() ?: return
-
                 val requestParts = requestLine.split(" ")
+
                 if (requestParts.size < 2) return
 
                 val method = requestParts[0]
@@ -179,10 +183,6 @@ class PlaybackService : MediaSessionService() {
                     return
                 }
 
-                val token = path
-                    .removePrefix("/stream/")
-                    .substringBefore("?")
-
                 if (!path.startsWith("/stream/")) {
                     sendResponse(
                         client.getOutputStream(),
@@ -194,6 +194,7 @@ class PlaybackService : MediaSessionService() {
                     return
                 }
 
+                val token = path.removePrefix("/stream/").substringBefore("?")
                 val uri = musicFiles[token]
 
                 if (uri == null) {
@@ -231,13 +232,10 @@ class PlaybackService : MediaSessionService() {
         var descriptor: AssetFileDescriptor? = null
 
         try {
-            descriptor = context.contentResolver
-                .openAssetFileDescriptor(uri, "r")
+            descriptor = context.contentResolver.openAssetFileDescriptor(uri, "r")
 
             if (descriptor == null) {
-                sendResponse(
-                    output, 404, "Not Found", "text/plain", 0
-                )
+                sendResponse(output, 404, "Not Found", "text/plain", 0)
                 return
             }
 
@@ -252,9 +250,7 @@ class PlaybackService : MediaSessionService() {
             }
 
             if (fileLength <= 0) {
-                sendResponse(
-                    output, 500, "File Size Unknown", "text/plain", 0
-                )
+                sendResponse(output, 500, "File Size Unknown", "text/plain", 0)
                 return
             }
 
@@ -297,11 +293,7 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
 
-                if (
-                    start < 0 ||
-                    end < start ||
-                    start >= fileLength
-                ) {
+                if (start < 0 || end < start || start >= fileLength) {
                     sendRangeError(output, fileLength)
                     return
                 }
@@ -313,9 +305,11 @@ class PlaybackService : MediaSessionService() {
             val contentLength = end - start + 1
 
             val mimeType = context.contentResolver.getType(uri)
-                ?: when (uri.lastPathSegment
-                    ?.substringAfterLast(".", "")
-                    ?.lowercase()) {
+                ?: when (
+                    uri.lastPathSegment
+                        ?.substringAfterLast(".", "")
+                        ?.lowercase()
+                ) {
                     "mp3" -> "audio/mpeg"
                     "flac" -> "audio/flac"
                     else -> "application/octet-stream"
@@ -357,7 +351,6 @@ class PlaybackService : MediaSessionService() {
                     ).toInt()
 
                     val count = input.read(buffer, 0, bytesToRead)
-
                     if (count <= 0) break
 
                     output.write(buffer, 0, count)
@@ -418,7 +411,6 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         activeInstance = null
-
         musicFiles.clear()
 
         try {
@@ -446,13 +438,14 @@ class PlaybackService : MediaSessionService() {
         @Volatile
         private var activeInstance: PlaybackService? = null
 
-        /**
-         * Bruges i trin 2 fra MainActivity til at få
-         * en netværksadresse til en lokal musikfil.
-         */
         @JvmStatic
         fun getStreamUrl(uri: Uri): String? {
             return activeInstance?.createStreamUrl(uri)
+        }
+
+        @JvmStatic
+        fun getOriginalUri(streamUrl: String): Uri? {
+            return activeInstance?.findOriginalUri(streamUrl)
         }
     }
 }
