@@ -21,6 +21,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -35,7 +36,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -54,6 +54,18 @@ import java.util.concurrent.Executor
 data class Track(
     val name: String,
     val uri: Uri
+)
+
+data class AlbumGroup(
+    val key: String,
+    val title: String,
+    val artist: String,
+    val tracks: List<LibraryTrack>
+)
+
+data class ArtistGroup(
+    val name: String,
+    val albums: List<AlbumGroup>
 )
 
 class MainActivity : ComponentActivity() {
@@ -190,13 +202,10 @@ suspend fun readArtwork(
 
     try {
         retriever.setDataSource(context, uri)
-
         val bytes = retriever.embeddedPicture
 
         if (bytes != null) {
-            BitmapFactory.decodeByteArray(
-                bytes, 0, bytes.size
-            )
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } else {
             null
         }
@@ -206,6 +215,43 @@ suspend fun readArtwork(
         try {
             retriever.release()
         } catch (_: Exception) {
+        }
+    }
+}
+
+@Composable
+fun AlbumArtwork(
+    track: LibraryTrack,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var artwork by remember(track.uri) {
+        mutableStateOf<Bitmap?>(null)
+    }
+
+    LaunchedEffect(track.uri) {
+        artwork = readArtwork(context, track.uri)
+    }
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
+    ) {
+        if (artwork != null) {
+            Image(
+                bitmap = artwork!!.asImageBitmap(),
+                contentDescription = "Albumcover",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Text(
+                "♪",
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -251,12 +297,69 @@ fun PurePlayerScreen() {
         mutableIntStateOf(0)
     }
 
+    var libraryView by rememberSaveable {
+        mutableIntStateOf(0)
+    }
+
+    var selectedArtist by rememberSaveable {
+        mutableStateOf<String?>(null)
+    }
+
+    var selectedAlbumKey by rememberSaveable {
+        mutableStateOf<String?>(null)
+    }
+
     var searchText by remember {
         mutableStateOf("")
     }
 
     var artwork by remember {
         mutableStateOf<Bitmap?>(null)
+    }
+
+    val albumGroups = remember(tracks) {
+        tracks.groupBy { track ->
+            val artist = track.albumArtist.ifBlank {
+                track.artist
+            }.trim()
+
+            val album = track.album.ifBlank {
+                "Ukendt album"
+            }.trim()
+
+            "${artist.lowercase()}|||${album.lowercase()}"
+        }.map { (key, albumTracks) ->
+
+            val sortedTracks = albumTracks.sortedBy {
+                it.title.lowercase()
+            }
+
+            AlbumGroup(
+                key = key,
+                title = sortedTracks.first().album,
+                artist = sortedTracks.first().albumArtist.ifBlank {
+                    sortedTracks.first().artist
+                },
+                tracks = sortedTracks
+            )
+        }.sortedBy {
+            it.title.lowercase()
+        }
+    }
+
+    val artistGroups = remember(albumGroups) {
+        albumGroups.groupBy {
+            it.artist.ifBlank { "Ukendt kunstner" }
+        }.map { (name, albums) ->
+            ArtistGroup(
+                name = name,
+                albums = albums.sortedBy {
+                    it.title.lowercase()
+                }
+            )
+        }.sortedBy {
+            it.name.lowercase()
+        }
     }
 
     val filteredTracks = remember(tracks, searchText) {
@@ -334,7 +437,6 @@ fun PurePlayerScreen() {
             "last_track", null
         )
 
-        // Vis det gemte bibliotek med det samme.
         tracks = withContext(Dispatchers.IO) {
             database.getTracks()
         }
@@ -346,7 +448,6 @@ fun PurePlayerScreen() {
             }
         }
 
-        // Kontroller musikmappen i baggrunden.
         if (savedFolder != null) {
             loading = true
 
@@ -370,7 +471,6 @@ fun PurePlayerScreen() {
     }
 
     LaunchedEffect(current, tracks) {
-
         val selectedTrack = tracks.getOrNull(current)
 
         artwork = if (selectedTrack != null) {
@@ -409,7 +509,6 @@ fun PurePlayerScreen() {
 
     fun updateLibrary(folderUri: Uri) {
         scope.launch {
-
             loading = true
 
             try {
@@ -420,7 +519,6 @@ fun PurePlayerScreen() {
                 )
 
                 libraryLoaded = true
-
             } catch (_: Exception) {
             }
 
@@ -517,6 +615,7 @@ fun PurePlayerScreen() {
                         Spacer(Modifier.height(12.dp))
 
                         if (!libraryLoaded) {
+
                             Button(
                                 onClick = {
                                     folderPicker.launch(null)
@@ -524,6 +623,7 @@ fun PurePlayerScreen() {
                             ) {
                                 Text("Vælg musikmappe")
                             }
+
                         } else {
 
                             Row(
@@ -573,68 +673,356 @@ fun PurePlayerScreen() {
 
                         Spacer(Modifier.height(8.dp))
 
-                        OutlinedTextField(
-                            value = searchText,
-                            onValueChange = {
-                                searchText = it
-                            },
-                            label = {
-                                Text("Søg i musikken")
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
+                        if (selectedAlbumKey == null &&
+                            selectedArtist == null
+                        ) {
+
+                            TabRow(selectedTabIndex = libraryView) {
+
+                                Tab(
+                                    selected = libraryView == 0,
+                                    onClick = { libraryView = 0 },
+                                    text = { Text("Numre") }
+                                )
+
+                                Tab(
+                                    selected = libraryView == 1,
+                                    onClick = { libraryView = 1 },
+                                    text = { Text("Album") }
+                                )
+
+                                Tab(
+                                    selected = libraryView == 2,
+                                    onClick = { libraryView = 2 },
+                                    text = { Text("Kunstnere") }
+                                )
+                            }
+                        }
 
                         Spacer(Modifier.height(8.dp))
 
-                        LazyColumn(
-                            modifier = Modifier.weight(1f)
+                        if (selectedAlbumKey == null &&
+                            selectedArtist == null
+                        ) {
+                            OutlinedTextField(
+                                value = searchText,
+                                onValueChange = { searchText = it },
+                                label = { Text("Søg i musikken") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+
+                            Spacer(Modifier.height(8.dp))
+                        }
+
+                        val selectedAlbum = albumGroups.firstOrNull {
+                            it.key == selectedAlbumKey
+                        }
+
+                        if (selectedAlbumKey != null &&
+                            selectedAlbum != null
                         ) {
 
-                            items(filteredTracks) { track ->
+                            TextButton(
+                                onClick = {
+                                    selectedAlbumKey = null
+                                }
+                            ) {
+                                Text("← Tilbage")
+                            }
 
-                                val originalIndex = tracks.indexOf(track)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                AlbumArtwork(
+                                    track = selectedAlbum.tracks.first(),
+                                    modifier = Modifier.size(112.dp)
+                                )
 
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            playTrack(originalIndex)
-                                            selectedTab = 1
-                                        }
-                                        .padding(vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                                Spacer(Modifier.width(14.dp))
 
-                                    Column(
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text(
-                                            track.title,
-                                            maxLines = 1
-                                        )
+                                Column {
+                                    Text(
+                                        selectedAlbum.title,
+                                        style = MaterialTheme.typography.titleLarge
+                                    )
 
-                                        Text(
-                                            "${track.artist} · ${track.album}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1
-                                        )
+                                    Text(
+                                        selectedAlbum.artist,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+
+                                    Text(
+                                        "${selectedAlbum.tracks.size} numre",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(12.dp))
+
+                            LazyColumn(
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                items(selectedAlbum.tracks) { track ->
+
+                                    val originalIndex = tracks.indexOfFirst {
+                                        it.uri == track.uri
                                     }
 
-                                    IconButton(
-                                        onClick = {
-                                            playTrack(originalIndex)
-                                        }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                playTrack(originalIndex)
+                                                selectedTab = 1
+                                            }
+                                            .padding(vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(
-                                            Icons.Default.PlayArrow,
-                                            contentDescription = "Afspil"
+                                        Column(
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text(
+                                                track.title,
+                                                maxLines = 1
+                                            )
+
+                                            Text(
+                                                track.artist,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+
+                                        IconButton(
+                                            onClick = {
+                                                playTrack(originalIndex)
+                                            }
+                                        ) {
+                                            Icon(
+                                                Icons.Default.PlayArrow,
+                                                contentDescription = "Afspil"
+                                            )
+                                        }
+                                    }
+
+                                    HorizontalDivider()
+                                }
+                            }
+
+                        } else if (selectedArtist != null) {
+
+                            TextButton(
+                                onClick = {
+                                    selectedArtist = null
+                                }
+                            ) {
+                                Text("← Tilbage til kunstnere")
+                            }
+
+                            Text(
+                                selectedArtist!!,
+                                style = MaterialTheme.typography.titleLarge
+                            )
+
+                            Spacer(Modifier.height(8.dp))
+
+                            val artistAlbums = artistGroups
+                                .firstOrNull {
+                                    it.name == selectedArtist
+                                }?.albums ?: emptyList()
+
+                            LazyColumn(
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                items(
+                                    artistAlbums,
+                                    key = { it.key }
+                                ) { album ->
+
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                selectedAlbumKey = album.key
+                                            }
+                                            .padding(vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        AlbumArtwork(
+                                            track = album.tracks.first(),
+                                            modifier = Modifier.size(64.dp)
                                         )
+
+                                        Spacer(Modifier.width(12.dp))
+
+                                        Column {
+                                            Text(album.title)
+                                            Text(
+                                                "${album.tracks.size} numre",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+
+                                    HorizontalDivider()
+                                }
+                            }
+
+                        } else {
+
+                            when (libraryView) {
+
+                                0 -> {
+
+                                    LazyColumn(
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        items(filteredTracks) { track ->
+
+                                            val originalIndex = tracks.indexOf(track)
+
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable {
+                                                        playTrack(originalIndex)
+                                                        selectedTab = 1
+                                                    }
+                                                    .padding(vertical = 12.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Text(
+                                                        track.title,
+                                                        maxLines = 1
+                                                    )
+
+                                                    Text(
+                                                        "${track.artist} · ${track.album}",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 1
+                                                    )
+                                                }
+
+                                                IconButton(
+                                                    onClick = {
+                                                        playTrack(originalIndex)
+                                                    }
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.PlayArrow,
+                                                        contentDescription = "Afspil"
+                                                    )
+                                                }
+                                            }
+
+                                            HorizontalDivider()
+                                        }
                                     }
                                 }
 
-                                HorizontalDivider()
+                                1 -> {
+
+                                    LazyColumn(
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        items(
+                                            albumGroups.filter {
+                                                it.title.contains(searchText, true) ||
+                                                it.artist.contains(searchText, true)
+                                            },
+                                            key = { it.key }
+                                        ) { album ->
+
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable {
+                                                        selectedAlbumKey = album.key
+                                                    }
+                                                    .padding(vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                AlbumArtwork(
+                                                    track = album.tracks.first(),
+                                                    modifier = Modifier.size(68.dp)
+                                                )
+
+                                                Spacer(Modifier.width(12.dp))
+
+                                                Column {
+                                                    Text(
+                                                        album.title,
+                                                        maxLines = 1
+                                                    )
+
+                                                    Text(
+                                                        album.artist,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+
+                                                    Text(
+                                                        "${album.tracks.size} numre",
+                                                        style = MaterialTheme.typography.bodySmall
+                                                    )
+                                                }
+                                            }
+
+                                            HorizontalDivider()
+                                        }
+                                    }
+                                }
+
+                                2 -> {
+
+                                    LazyColumn(
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        items(
+                                            artistGroups.filter {
+                                                it.name.contains(searchText, true)
+                                            },
+                                            key = { it.name }
+                                        ) { artist ->
+
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable {
+                                                        selectedArtist = artist.name
+                                                    }
+                                                    .padding(vertical = 14.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                AlbumArtwork(
+                                                    track = artist.albums.first().tracks.first(),
+                                                    modifier = Modifier.size(58.dp)
+                                                )
+
+                                                Spacer(Modifier.width(12.dp))
+
+                                                Column {
+                                                    Text(artist.name)
+
+                                                    Text(
+                                                        "${artist.albums.size} album",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+
+                                            HorizontalDivider()
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -654,7 +1042,6 @@ fun PurePlayerScreen() {
                             modifier = Modifier.fillMaxWidth(),
                             contentAlignment = Alignment.Center
                         ) {
-
                             Box(
                                 modifier = Modifier
                                     .size(250.dp)
@@ -664,18 +1051,18 @@ fun PurePlayerScreen() {
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
-
                                 if (artwork != null) {
-
                                     Image(
                                         bitmap = artwork!!.asImageBitmap(),
                                         contentDescription = "Albumcover",
                                         modifier = Modifier.fillMaxSize(),
                                         contentScale = ContentScale.Crop
                                     )
-
                                 } else {
-                                    Text("♪", style = MaterialTheme.typography.displayLarge)
+                                    Text(
+                                        "♪",
+                                        style = MaterialTheme.typography.displayLarge
+                                    )
                                 }
                             }
                         }
