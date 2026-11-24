@@ -261,10 +261,6 @@ fun AlbumArtwork(
     }
 }
 
-/**
- * Opretter et MediaItem med en netværksadresse,
- * som både telefonen og Chromecast kan hente.
- */
 private fun createNetworkMediaItem(
     track: LibraryTrack
 ): MediaItem {
@@ -479,12 +475,30 @@ fun PurePlayerScreen() {
             ) {
                 val mediaId = mediaItem?.mediaId
 
+                val streamUri = mediaItem
+                    ?.localConfiguration
+                    ?.uri
+                    ?.toString()
+
+                val originalUri = streamUri?.let {
+                    PlaybackService.getOriginalUri(it)?.toString()
+                }
+
                 val trackIndex = latestTracks.indexOfFirst {
-                    it.uri.toString() == mediaId
+                    it.uri.toString() == mediaId ||
+                    it.uri.toString() == originalUri
                 }
 
                 if (trackIndex >= 0) {
                     current = trackIndex
+
+                    preferences.edit()
+                        .putString(
+                            "last_track",
+                            latestTracks[trackIndex].uri.toString()
+                        )
+                        .apply()
+
                 } else {
                     val queuePosition =
                         controller?.currentMediaItemIndex ?: -1
@@ -576,10 +590,7 @@ fun PurePlayerScreen() {
 
         if (index !in validQueue) return
 
-        // Begræns køen, så Cast ikke modtager
-        // hele musikbiblioteket på én gang.
         val maxQueueSize = 50
-
         val originalPosition = validQueue.indexOf(index)
 
         val limitedQueue = if (validQueue.size > maxQueueSize) {
@@ -734,9 +745,7 @@ fun PurePlayerScreen() {
         }
 
         Scaffold(
-
             bottomBar = {
-
                 NavigationBar {
 
                     NavigationBarItem(
@@ -776,7 +785,6 @@ fun PurePlayerScreen() {
                     )
                 }
             }
-
         ) { innerPadding ->
 
             Column(
