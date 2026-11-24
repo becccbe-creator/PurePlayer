@@ -526,12 +526,31 @@ fun PurePlayerScreen() {
 
         if (index !in validQueue) return
 
-        val queuePosition = validQueue.indexOf(index)
-        queueIndices = validQueue
+        // Begræns køen, så Chromecast ikke modtager
+        // hele musikbiblioteket på én gang.
+        val maxQueueSize = 50
+
+        val originalPosition = validQueue.indexOf(index)
+
+        val limitedQueue = if (validQueue.size > maxQueueSize) {
+            val start = (originalPosition - maxQueueSize / 2)
+                .coerceIn(0, validQueue.size - maxQueueSize)
+
+            validQueue.subList(
+                start,
+                start + maxQueueSize
+            )
+        } else {
+            validQueue
+        }
+
+        val queuePosition = limitedQueue.indexOf(index)
+
+        queueIndices = limitedQueue
         current = index
 
         mediaController.setMediaItems(
-            validQueue.map { trackIndex ->
+            limitedQueue.map { trackIndex ->
                 MediaItem.fromUri(tracks[trackIndex].uri)
             },
             queuePosition,
