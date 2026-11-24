@@ -281,6 +281,12 @@ fun PurePlayerScreen() {
         mutableIntStateOf(-1)
     }
 
+    // Indeholder rækkefølgen i den aktive afspilningskø.
+    // Tallene henviser til numrenes placering i hele biblioteket.
+    var queueIndices by remember {
+        mutableStateOf(listOf<Int>())
+    }
+
     var playing by remember {
         mutableStateOf(false)
     }
@@ -319,6 +325,7 @@ fun PurePlayerScreen() {
 
     val albumGroups = remember(tracks) {
         tracks.groupBy { track ->
+
             val artist = track.albumArtist.ifBlank {
                 track.artist
             }.trim()
@@ -328,6 +335,7 @@ fun PurePlayerScreen() {
             }.trim()
 
             "${artist.lowercase()}|||${album.lowercase()}"
+
         }.map { (key, albumTracks) ->
 
             val sortedTracks = albumTracks.sortedBy {
@@ -342,6 +350,7 @@ fun PurePlayerScreen() {
                 },
                 tracks = sortedTracks
             )
+
         }.sortedBy {
             it.title.lowercase()
         }
@@ -351,12 +360,14 @@ fun PurePlayerScreen() {
         albumGroups.groupBy {
             it.artist.ifBlank { "Ukendt kunstner" }
         }.map { (name, albums) ->
+
             ArtistGroup(
                 name = name,
                 albums = albums.sortedBy {
                     it.title.lowercase()
                 }
             )
+
         }.sortedBy {
             it.name.lowercase()
         }
@@ -391,6 +402,7 @@ fun PurePlayerScreen() {
     }
 
     DisposableEffect(controllerFuture) {
+
         controllerFuture.addListener({
             try {
                 controller = controllerFuture.get()
@@ -416,7 +428,10 @@ fun PurePlayerScreen() {
                 mediaItem: MediaItem?,
                 reason: Int
             ) {
-                current = controller?.currentMediaItemIndex ?: -1
+                val queuePosition =
+                    controller?.currentMediaItemIndex ?: -1
+
+                current = queueIndices.getOrNull(queuePosition) ?: -1
             }
         }
 
@@ -441,14 +456,18 @@ fun PurePlayerScreen() {
             database.getTracks()
         }
 
+        queueIndices = tracks.indices.toList()
+
         if (tracks.isNotEmpty()) {
             libraryLoaded = true
+
             current = tracks.indexOfFirst {
                 it.uri.toString() == lastTrack
             }
         }
 
         if (savedFolder != null) {
+
             loading = true
 
             try {
@@ -458,11 +477,13 @@ fun PurePlayerScreen() {
                     database
                 )
 
+                queueIndices = tracks.indices.toList()
                 libraryLoaded = true
 
                 current = tracks.indexOfFirst {
                     it.uri.toString() == lastTrack
                 }
+
             } catch (_: Exception) {
             }
 
@@ -471,6 +492,7 @@ fun PurePlayerScreen() {
     }
 
     LaunchedEffect(current, tracks) {
+
         val selectedTrack = tracks.getOrNull(current)
 
         artwork = if (selectedTrack != null) {
@@ -480,19 +502,33 @@ fun PurePlayerScreen() {
         }
     }
 
-    fun playTrack(index: Int) {
+    // Starter afspilning med en bestemt kø.
+    fun playTrackInQueue(
+        index: Int,
+        requestedQueue: List<Int>
+    ) {
 
         val mediaController = controller ?: return
 
         if (index !in tracks.indices) return
 
+        // Fjern ugyldige indeks og undgå dubletter.
+        val validQueue = requestedQueue
+            .distinct()
+            .filter { it in tracks.indices }
+
+        if (index !in validQueue) return
+
+        val queuePosition = validQueue.indexOf(index)
+
+        queueIndices = validQueue
         current = index
 
         mediaController.setMediaItems(
-            tracks.map {
-                MediaItem.fromUri(it.uri)
+            validQueue.map { trackIndex ->
+                MediaItem.fromUri(tracks[trackIndex].uri)
             },
-            index,
+            queuePosition,
             0L
         )
 
@@ -507,8 +543,18 @@ fun PurePlayerScreen() {
             .apply()
     }
 
+    // Almindelig afspilning fra fanen Numre.
+    fun playTrack(index: Int) {
+        playTrackInQueue(
+            index,
+            tracks.indices.toList()
+        )
+    }
+
     fun updateLibrary(folderUri: Uri) {
+
         scope.launch {
+
             loading = true
 
             try {
@@ -518,7 +564,11 @@ fun PurePlayerScreen() {
                     database
                 )
 
+                // Et opdateret bibliotek starter med hele biblioteket som kø.
+                queueIndices = tracks.indices.toList()
+
                 libraryLoaded = true
+
             } catch (_: Exception) {
             }
 
@@ -551,6 +601,7 @@ fun PurePlayerScreen() {
     MaterialTheme(colorScheme = darkColorScheme()) {
 
         Scaffold(
+
             bottomBar = {
 
                 NavigationBar {
@@ -592,6 +643,7 @@ fun PurePlayerScreen() {
                     )
                 }
             }
+
         ) { innerPadding ->
 
             Column(
@@ -608,6 +660,7 @@ fun PurePlayerScreen() {
 
                 when (selectedTab) {
 
+                    // MUSIK
                     0 -> {
 
                         Text("Din musik. Din telefon. Ingen abonnementer.")
@@ -704,6 +757,7 @@ fun PurePlayerScreen() {
                         if (selectedAlbumKey == null &&
                             selectedArtist == null
                         ) {
+
                             OutlinedTextField(
                                 value = searchText,
                                 onValueChange = { searchText = it },
@@ -719,6 +773,7 @@ fun PurePlayerScreen() {
                             it.key == selectedAlbumKey
                         }
 
+                        // ALBUMMETS NUMRE
                         if (selectedAlbumKey != null &&
                             selectedAlbum != null
                         ) {
@@ -734,6 +789,7 @@ fun PurePlayerScreen() {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+
                                 AlbumArtwork(
                                     track = selectedAlbum.tracks.first(),
                                     modifier = Modifier.size(112.dp)
@@ -742,6 +798,7 @@ fun PurePlayerScreen() {
                                 Spacer(Modifier.width(14.dp))
 
                                 Column {
+
                                     Text(
                                         selectedAlbum.title,
                                         style = MaterialTheme.typography.titleLarge
@@ -764,25 +821,67 @@ fun PurePlayerScreen() {
                             LazyColumn(
                                 modifier = Modifier.weight(1f)
                             ) {
+
                                 items(selectedAlbum.tracks) { track ->
 
                                     val originalIndex = tracks.indexOfFirst {
                                         it.uri == track.uri
                                     }
 
+                                    // Hvis albummet er åbnet fra en kunstner,
+                                    // bruger vi alle kunstnerens albummer som kø.
+                                    val artistQueue = if (selectedArtist != null) {
+
+                                        artistGroups
+                                            .firstOrNull {
+                                                it.name == selectedArtist
+                                            }
+                                            ?.albums
+                                            ?.flatMap { album ->
+                                                album.tracks.map { albumTrack ->
+                                                    tracks.indexOfFirst {
+                                                        it.uri == albumTrack.uri
+                                                    }
+                                                }
+                                            }
+                                            ?: emptyList()
+
+                                    } else {
+                                        emptyList()
+                                    }
+
+                                    val albumQueue = selectedAlbum.tracks.map {
+                                        albumTrack ->
+                                        tracks.indexOfFirst {
+                                            it.uri == albumTrack.uri
+                                        }
+                                    }
+
+                                    val playbackQueue =
+                                        if (selectedArtist != null) {
+                                            artistQueue
+                                        } else {
+                                            albumQueue
+                                        }
+
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clickable {
-                                                playTrack(originalIndex)
+                                                playTrackInQueue(
+                                                    originalIndex,
+                                                    playbackQueue
+                                                )
                                                 selectedTab = 1
                                             }
                                             .padding(vertical = 12.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
+
                                         Column(
                                             modifier = Modifier.weight(1f)
                                         ) {
+
                                             Text(
                                                 track.title,
                                                 maxLines = 1
@@ -797,7 +896,10 @@ fun PurePlayerScreen() {
 
                                         IconButton(
                                             onClick = {
-                                                playTrack(originalIndex)
+                                                playTrackInQueue(
+                                                    originalIndex,
+                                                    playbackQueue
+                                                )
                                             }
                                         ) {
                                             Icon(
@@ -811,6 +913,7 @@ fun PurePlayerScreen() {
                                 }
                             }
 
+                        // KUNSTNERENS ALBUMMER
                         } else if (selectedArtist != null) {
 
                             TextButton(
@@ -836,6 +939,7 @@ fun PurePlayerScreen() {
                             LazyColumn(
                                 modifier = Modifier.weight(1f)
                             ) {
+
                                 items(
                                     artistAlbums,
                                     key = { it.key }
@@ -850,6 +954,7 @@ fun PurePlayerScreen() {
                                             .padding(vertical = 10.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
+
                                         AlbumArtwork(
                                             track = album.tracks.first(),
                                             modifier = Modifier.size(64.dp)
@@ -858,7 +963,9 @@ fun PurePlayerScreen() {
                                         Spacer(Modifier.width(12.dp))
 
                                         Column {
+
                                             Text(album.title)
+
                                             Text(
                                                 "${album.tracks.size} numre",
                                                 style = MaterialTheme.typography.bodySmall,
@@ -875,11 +982,13 @@ fun PurePlayerScreen() {
 
                             when (libraryView) {
 
+                                // NUMRE
                                 0 -> {
 
                                     LazyColumn(
                                         modifier = Modifier.weight(1f)
                                     ) {
+
                                         items(filteredTracks) { track ->
 
                                             val originalIndex = tracks.indexOf(track)
@@ -894,9 +1003,11 @@ fun PurePlayerScreen() {
                                                     .padding(vertical = 12.dp),
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
+
                                                 Column(
                                                     modifier = Modifier.weight(1f)
                                                 ) {
+
                                                     Text(
                                                         track.title,
                                                         maxLines = 1
@@ -927,11 +1038,13 @@ fun PurePlayerScreen() {
                                     }
                                 }
 
+                                // ALBUM
                                 1 -> {
 
                                     LazyColumn(
                                         modifier = Modifier.weight(1f)
                                     ) {
+
                                         items(
                                             albumGroups.filter {
                                                 it.title.contains(searchText, true) ||
@@ -949,6 +1062,7 @@ fun PurePlayerScreen() {
                                                     .padding(vertical = 10.dp),
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
+
                                                 AlbumArtwork(
                                                     track = album.tracks.first(),
                                                     modifier = Modifier.size(68.dp)
@@ -957,6 +1071,7 @@ fun PurePlayerScreen() {
                                                 Spacer(Modifier.width(12.dp))
 
                                                 Column {
+
                                                     Text(
                                                         album.title,
                                                         maxLines = 1
@@ -980,11 +1095,13 @@ fun PurePlayerScreen() {
                                     }
                                 }
 
+                                // KUNSTNERE
                                 2 -> {
 
                                     LazyColumn(
                                         modifier = Modifier.weight(1f)
                                     ) {
+
                                         items(
                                             artistGroups.filter {
                                                 it.name.contains(searchText, true)
@@ -1001,6 +1118,7 @@ fun PurePlayerScreen() {
                                                     .padding(vertical = 14.dp),
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
+
                                                 AlbumArtwork(
                                                     track = artist.albums.first().tracks.first(),
                                                     modifier = Modifier.size(58.dp)
@@ -1009,6 +1127,7 @@ fun PurePlayerScreen() {
                                                 Spacer(Modifier.width(12.dp))
 
                                                 Column {
+
                                                     Text(artist.name)
 
                                                     Text(
@@ -1027,6 +1146,7 @@ fun PurePlayerScreen() {
                         }
                     }
 
+                    // AFSPILLER
                     1 -> {
 
                         Spacer(Modifier.height(14.dp))
@@ -1042,6 +1162,7 @@ fun PurePlayerScreen() {
                             modifier = Modifier.fillMaxWidth(),
                             contentAlignment = Alignment.Center
                         ) {
+
                             Box(
                                 modifier = Modifier
                                     .size(250.dp)
@@ -1051,14 +1172,18 @@ fun PurePlayerScreen() {
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
+
                                 if (artwork != null) {
+
                                     Image(
                                         bitmap = artwork!!.asImageBitmap(),
                                         contentDescription = "Albumcover",
                                         modifier = Modifier.fillMaxSize(),
                                         contentScale = ContentScale.Crop
                                     )
+
                                 } else {
+
                                     Text(
                                         "♪",
                                         style = MaterialTheme.typography.displayLarge
@@ -1115,11 +1240,23 @@ fun PurePlayerScreen() {
 
                             IconButton(
                                 onClick = {
-                                    if (current > 0) {
-                                        playTrack(current - 1)
+
+                                    val queuePosition =
+                                        queueIndices.indexOf(current)
+
+                                    if (queuePosition > 0) {
+
+                                        val previousIndex =
+                                            queueIndices[queuePosition - 1]
+
+                                        playTrackInQueue(
+                                            previousIndex,
+                                            queueIndices
+                                        )
                                     }
                                 }
                             ) {
+
                                 Icon(
                                     Icons.Default.SkipPrevious,
                                     contentDescription = "Forrige",
@@ -1129,7 +1266,9 @@ fun PurePlayerScreen() {
 
                             IconButton(
                                 onClick = {
+
                                     controller?.let {
+
                                         if (it.isPlaying) {
                                             it.pause()
                                         } else if (current >= 0) {
@@ -1139,6 +1278,7 @@ fun PurePlayerScreen() {
                                 },
                                 modifier = Modifier.size(64.dp)
                             ) {
+
                                 Icon(
                                     if (playing) {
                                         Icons.Default.Pause
@@ -1152,11 +1292,25 @@ fun PurePlayerScreen() {
 
                             IconButton(
                                 onClick = {
-                                    if (current + 1 < tracks.size) {
-                                        playTrack(current + 1)
+
+                                    val queuePosition =
+                                        queueIndices.indexOf(current)
+
+                                    if (queuePosition >= 0 &&
+                                        queuePosition + 1 < queueIndices.size
+                                    ) {
+
+                                        val nextIndex =
+                                            queueIndices[queuePosition + 1]
+
+                                        playTrackInQueue(
+                                            nextIndex,
+                                            queueIndices
+                                        )
                                     }
                                 }
                             ) {
+
                                 Icon(
                                     Icons.Default.SkipNext,
                                     contentDescription = "Næste",
@@ -1166,6 +1320,7 @@ fun PurePlayerScreen() {
                         }
                     }
 
+                    // EQUALIZER
                     2 -> {
 
                         Spacer(Modifier.height(24.dp))
