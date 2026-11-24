@@ -463,6 +463,7 @@ fun PurePlayerScreen() {
     }
 
     val latestQueueIndices by rememberUpdatedState(queueIndices)
+    val latestTracks by rememberUpdatedState(tracks)
 
     DisposableEffect(controller) {
 
@@ -476,10 +477,20 @@ fun PurePlayerScreen() {
                 mediaItem: MediaItem?,
                 reason: Int
             ) {
-                val queuePosition =
-                    controller?.currentMediaItemIndex ?: -1
+                val mediaId = mediaItem?.mediaId
 
-                current = latestQueueIndices.getOrNull(queuePosition) ?: -1
+                val trackIndex = latestTracks.indexOfFirst {
+                    it.uri.toString() == mediaId
+                }
+
+                if (trackIndex >= 0) {
+                    current = trackIndex
+                } else {
+                    val queuePosition =
+                        controller?.currentMediaItemIndex ?: -1
+
+                    current = latestQueueIndices.getOrNull(queuePosition) ?: -1
+                }
             }
         }
 
