@@ -635,6 +635,16 @@ fun PurePlayerScreen() {
                     TextButton(
                         onClick = {
                             showExitDialog = false
+
+                            // Stop musikafspilningen
+                            controller?.stop()
+
+                            // Luk afspilningstjenesten
+                            context.stopService(
+                                Intent(context, PlaybackService::class.java)
+                            )
+
+                            // Luk PurePlayer
                             (context as? Activity)?.finish()
                         }
                     ) {
