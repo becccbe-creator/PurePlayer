@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import androidx.media3.cast.MediaRouteButton
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
@@ -258,6 +259,44 @@ fun AlbumArtwork(
             )
         }
     }
+}
+
+/**
+ * Opretter et MediaItem med en netværksadresse,
+ * som både telefonen og Chromecast kan hente.
+ */
+private fun createNetworkMediaItem(
+    track: LibraryTrack
+): MediaItem {
+
+    val streamUrl = PlaybackService.getStreamUrl(track.uri)
+
+    val playbackUri = streamUrl?.let {
+        Uri.parse(it)
+    } ?: track.uri
+
+    val extension = track.name
+        .substringAfterLast(".", "")
+        .lowercase()
+
+    val mimeType = when (extension) {
+        "mp3" -> "audio/mpeg"
+        "flac" -> "audio/flac"
+        else -> "application/octet-stream"
+    }
+
+    val metadata = MediaMetadata.Builder()
+        .setTitle(track.title)
+        .setArtist(track.artist)
+        .setAlbumTitle(track.album)
+        .build()
+
+    return MediaItem.Builder()
+        .setMediaId(track.uri.toString())
+        .setUri(playbackUri)
+        .setMimeType(mimeType)
+        .setMediaMetadata(metadata)
+        .build()
 }
 
 @OptIn(UnstableApi::class)
@@ -526,7 +565,7 @@ fun PurePlayerScreen() {
 
         if (index !in validQueue) return
 
-        // Begræns køen, så Chromecast ikke modtager
+        // Begræns køen, så Cast ikke modtager
         // hele musikbiblioteket på én gang.
         val maxQueueSize = 50
 
@@ -549,10 +588,12 @@ fun PurePlayerScreen() {
         queueIndices = limitedQueue
         current = index
 
+        val mediaItems = limitedQueue.map { trackIndex ->
+            createNetworkMediaItem(tracks[trackIndex])
+        }
+
         mediaController.setMediaItems(
-            limitedQueue.map { trackIndex ->
-                MediaItem.fromUri(tracks[trackIndex].uri)
-            },
+            mediaItems,
             queuePosition,
             0L
         )
@@ -1246,7 +1287,6 @@ fun PurePlayerScreen() {
                         }
 
                         Spacer(Modifier.height(12.dp))
-
                         Spacer(Modifier.height(18.dp))
 
                         Box(
