@@ -20,14 +20,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.*
@@ -36,6 +35,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -54,13 +54,6 @@ import java.util.concurrent.Executor
 data class Track(
     val name: String,
     val uri: Uri
-)
-
-data class TrackDetails(
-    val title: String,
-    val artist: String,
-    val album: String,
-    val artwork: Bitmap?
 )
 
 class MainActivity : ComponentActivity() {
@@ -105,13 +98,12 @@ suspend fun scanMusicFolder(
     found.sortedBy { it.name.lowercase() }
 }
 
-suspend fun readTrackDetails(
+suspend fun readLibraryTrack(
     context: Context,
     track: Track
-): TrackDetails = withContext(Dispatchers.IO) {
+): LibraryTrack = withContext(Dispatchers.IO) {
 
     val fallbackTitle = track.name.substringBeforeLast(".")
-
     val retriever = MediaMetadataRetriever()
 
     try {
@@ -129,26 +121,87 @@ suspend fun readTrackDetails(
             MediaMetadataRetriever.METADATA_KEY_ALBUM
         )?.takeIf { it.isNotBlank() } ?: "Ukendt album"
 
-        val imageBytes = retriever.embeddedPicture
+        val albumArtist = retriever.extractMetadata(
+            MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST
+        )?.takeIf { it.isNotBlank() } ?: artist
 
-        val artwork = imageBytes?.let {
-            BitmapFactory.decodeByteArray(it, 0, it.size)
-        }
-
-        TrackDetails(
+        LibraryTrack(
+            uri = track.uri,
+            name = track.name,
             title = title,
             artist = artist,
             album = album,
-            artwork = artwork
+            albumArtist = albumArtist
         )
-
     } catch (_: Exception) {
-        TrackDetails(
+        LibraryTrack(
+            uri = track.uri,
+            name = track.name,
             title = fallbackTitle,
             artist = "Ukendt kunstner",
             album = "Ukendt album",
-            artwork = null
+            albumArtist = "Ukendt kunstner"
         )
+    } finally {
+        try {
+            retriever.release()
+        } catch (_: Exception) {
+        }
+    }
+}
+
+suspend fun refreshMusicLibrary(
+    context: Context,
+    folderUri: Uri,
+    database: MusicLibraryDatabase
+): List<LibraryTrack> = withContext(Dispatchers.IO) {
+
+    val scanned = scanMusicFolder(context, folderUri)
+    val cached = database.getTracks()
+
+    val cachedUris = cached.map {
+        it.uri.toString()
+    }.toSet()
+
+    val newTracks = scanned.filter {
+        it.uri.toString() !in cachedUris
+    }
+
+    newTracks.forEach { track ->
+        val libraryTrack = readLibraryTrack(context, track)
+        database.saveTracks(listOf(libraryTrack))
+    }
+
+    val validUris = scanned.map {
+        it.uri.toString()
+    }.toSet()
+
+    database.removeMissingTracks(validUris)
+
+    database.getTracks()
+}
+
+suspend fun readArtwork(
+    context: Context,
+    uri: Uri
+): Bitmap? = withContext(Dispatchers.IO) {
+
+    val retriever = MediaMetadataRetriever()
+
+    try {
+        retriever.setDataSource(context, uri)
+
+        val bytes = retriever.embeddedPicture
+
+        if (bytes != null) {
+            BitmapFactory.decodeByteArray(
+                bytes, 0, bytes.size
+            )
+        } else {
+            null
+        }
+    } catch (_: Exception) {
+        null
     } finally {
         try {
             retriever.release()
@@ -161,6 +214,7 @@ suspend fun readTrackDetails(
 fun PurePlayerScreen() {
 
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     val preferences = remember {
         context.getSharedPreferences(
@@ -169,10 +223,12 @@ fun PurePlayerScreen() {
         )
     }
 
-    val scope = rememberCoroutineScope()
+    val database = remember {
+        MusicLibraryDatabase(context.applicationContext)
+    }
 
     var tracks by remember {
-        mutableStateOf(listOf<Track>())
+        mutableStateOf(listOf<LibraryTrack>())
     }
 
     var current by rememberSaveable {
@@ -187,6 +243,10 @@ fun PurePlayerScreen() {
         mutableStateOf(false)
     }
 
+    var libraryLoaded by remember {
+        mutableStateOf(false)
+    }
+
     var selectedTab by rememberSaveable {
         mutableIntStateOf(0)
     }
@@ -195,17 +255,16 @@ fun PurePlayerScreen() {
         mutableStateOf("")
     }
 
-    var libraryLoaded by remember {
-        mutableStateOf(false)
-    }
-
-    var trackDetails by remember {
-        mutableStateOf<TrackDetails?>(null)
+    var artwork by remember {
+        mutableStateOf<Bitmap?>(null)
     }
 
     val filteredTracks = remember(tracks, searchText) {
         tracks.filter {
-            it.name.contains(searchText, ignoreCase = true)
+            it.title.contains(searchText, true) ||
+            it.artist.contains(searchText, true) ||
+            it.album.contains(searchText, true) ||
+            it.name.contains(searchText, true)
         }
     }
 
@@ -265,17 +324,59 @@ fun PurePlayerScreen() {
         }
     }
 
+    LaunchedEffect(Unit) {
+
+        val savedFolder = preferences.getString(
+            "music_folder", null
+        )
+
+        val lastTrack = preferences.getString(
+            "last_track", null
+        )
+
+        // Vis det gemte bibliotek med det samme.
+        tracks = withContext(Dispatchers.IO) {
+            database.getTracks()
+        }
+
+        if (tracks.isNotEmpty()) {
+            libraryLoaded = true
+            current = tracks.indexOfFirst {
+                it.uri.toString() == lastTrack
+            }
+        }
+
+        // Kontroller musikmappen i baggrunden.
+        if (savedFolder != null) {
+            loading = true
+
+            try {
+                tracks = refreshMusicLibrary(
+                    context,
+                    Uri.parse(savedFolder),
+                    database
+                )
+
+                libraryLoaded = true
+
+                current = tracks.indexOfFirst {
+                    it.uri.toString() == lastTrack
+                }
+            } catch (_: Exception) {
+            }
+
+            loading = false
+        }
+    }
+
     LaunchedEffect(current, tracks) {
 
         val selectedTrack = tracks.getOrNull(current)
 
-        if (selectedTrack == null) {
-            trackDetails = null
+        artwork = if (selectedTrack != null) {
+            readArtwork(context, selectedTrack.uri)
         } else {
-            trackDetails = readTrackDetails(
-                context,
-                selectedTrack
-            )
+            null
         }
     }
 
@@ -306,6 +407,27 @@ fun PurePlayerScreen() {
             .apply()
     }
 
+    fun updateLibrary(folderUri: Uri) {
+        scope.launch {
+
+            loading = true
+
+            try {
+                tracks = refreshMusicLibrary(
+                    context,
+                    folderUri,
+                    database
+                )
+
+                libraryLoaded = true
+
+            } catch (_: Exception) {
+            }
+
+            loading = false
+        }
+    }
+
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { treeUri ->
@@ -324,55 +446,7 @@ fun PurePlayerScreen() {
                 .putString("music_folder", treeUri.toString())
                 .apply()
 
-            scope.launch {
-
-                loading = true
-
-                tracks = scanMusicFolder(context, treeUri)
-
-                libraryLoaded = true
-                loading = false
-
-                val lastTrack = preferences.getString(
-                    "last_track",
-                    null
-                )
-
-                current = tracks.indexOfFirst {
-                    it.uri.toString() == lastTrack
-                }
-            }
-        }
-    }
-
-    LaunchedEffect(Unit) {
-
-        val savedFolder = preferences.getString(
-            "music_folder",
-            null
-        )
-
-        if (savedFolder != null) {
-
-            loading = true
-
-            tracks = scanMusicFolder(
-                context,
-                Uri.parse(savedFolder)
-            )
-
-            libraryLoaded = true
-
-            val lastTrack = preferences.getString(
-                "last_track",
-                null
-            )
-
-            current = tracks.indexOfFirst {
-                it.uri.toString() == lastTrack
-            }
-
-            loading = false
+            updateLibrary(treeUri)
         }
     }
 
@@ -440,17 +514,64 @@ fun PurePlayerScreen() {
 
                         Text("Din musik. Din telefon. Ingen abonnementer.")
 
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(12.dp))
 
-                        Button(
-                            onClick = {
-                                folderPicker.launch(null)
+                        if (!libraryLoaded) {
+                            Button(
+                                onClick = {
+                                    folderPicker.launch(null)
+                                }
+                            ) {
+                                Text("Vælg musikmappe")
                             }
-                        ) {
-                            Text("Vælg musikmappe")
+                        } else {
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+
+                                Text(
+                                    "${tracks.size} musiknumre",
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                TextButton(
+                                    onClick = {
+                                        folderPicker.launch(null)
+                                    }
+                                ) {
+                                    Text("Skift mappe")
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        val folder = preferences.getString(
+                                            "music_folder", null
+                                        )
+
+                                        if (folder != null) {
+                                            updateLibrary(Uri.parse(folder))
+                                        }
+                                    },
+                                    enabled = !loading
+                                ) {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = "Opdater bibliotek"
+                                    )
+                                }
+                            }
                         }
 
-                        Spacer(Modifier.height(12.dp))
+                        if (loading) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text("Kontrollerer musikbibliotek...")
+                        }
+
+                        Spacer(Modifier.height(8.dp))
 
                         OutlinedTextField(
                             value = searchText,
@@ -464,24 +585,13 @@ fun PurePlayerScreen() {
                             singleLine = true
                         )
 
-                        Spacer(Modifier.height(10.dp))
-
-                        Text(
-                            when {
-                                loading -> "Indlæser musik..."
-                                else -> "${tracks.size} musikfiler fundet"
-                            }
-                        )
-
-                        if (!libraryLoaded && !loading) {
-                            Text("Vælg en musikmappe for at begynde.")
-                        }
+                        Spacer(Modifier.height(8.dp))
 
                         LazyColumn(
                             modifier = Modifier.weight(1f)
                         ) {
 
-                            itemsIndexed(filteredTracks) { _, track ->
+                            items(filteredTracks) { track ->
 
                                 val originalIndex = tracks.indexOf(track)
 
@@ -496,11 +606,21 @@ fun PurePlayerScreen() {
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
 
-                                    Text(
-                                        track.name,
-                                        modifier = Modifier.weight(1f),
-                                        maxLines = 2
-                                    )
+                                    Column(
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(
+                                            track.title,
+                                            maxLines = 1
+                                        )
+
+                                        Text(
+                                            "${track.artist} · ${track.album}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1
+                                        )
+                                    }
 
                                     IconButton(
                                         onClick = {
@@ -545,25 +665,17 @@ fun PurePlayerScreen() {
                                 contentAlignment = Alignment.Center
                             ) {
 
-                                val artwork = trackDetails?.artwork
-
                                 if (artwork != null) {
 
                                     Image(
-                                        bitmap = artwork.asImageBitmap(),
+                                        bitmap = artwork!!.asImageBitmap(),
                                         contentDescription = "Albumcover",
                                         modifier = Modifier.fillMaxSize(),
                                         contentScale = ContentScale.Crop
                                     )
 
                                 } else {
-
-                                    Icon(
-                                        Icons.Default.MusicNote,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(90.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    Text("♪", style = MaterialTheme.typography.displayLarge)
                                 }
                             }
                         }
@@ -571,12 +683,8 @@ fun PurePlayerScreen() {
                         Spacer(Modifier.height(22.dp))
 
                         Text(
-                            trackDetails?.title
-                                ?: if (current in tracks.indices) {
-                                    tracks[current].name.substringBeforeLast(".")
-                                } else {
-                                    "Ingen sang valgt"
-                                },
+                            tracks.getOrNull(current)?.title
+                                ?: "Ingen sang valgt",
                             style = MaterialTheme.typography.headlineSmall,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth(),
@@ -586,9 +694,8 @@ fun PurePlayerScreen() {
                         Spacer(Modifier.height(6.dp))
 
                         Text(
-                            trackDetails?.artist ?: " ",
+                            tracks.getOrNull(current)?.artist ?: "",
                             style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -596,7 +703,7 @@ fun PurePlayerScreen() {
                         Spacer(Modifier.height(4.dp))
 
                         Text(
-                            trackDetails?.album ?: " ",
+                            tracks.getOrNull(current)?.album ?: "",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
