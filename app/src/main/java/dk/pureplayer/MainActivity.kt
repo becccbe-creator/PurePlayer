@@ -1,6 +1,7 @@
 
 package dk.pureplayer
 
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -14,6 +15,7 @@ import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -281,8 +283,6 @@ fun PurePlayerScreen() {
         mutableIntStateOf(-1)
     }
 
-    // Indeholder rækkefølgen i den aktive afspilningskø.
-    // Tallene henviser til numrenes placering i hele biblioteket.
     var queueIndices by remember {
         mutableStateOf(listOf<Int>())
     }
@@ -301,6 +301,10 @@ fun PurePlayerScreen() {
 
     var selectedTab by rememberSaveable {
         mutableIntStateOf(0)
+    }
+
+    var showExitDialog by remember {
+        mutableStateOf(false)
     }
 
     var libraryView by rememberSaveable {
@@ -416,6 +420,8 @@ fun PurePlayerScreen() {
         }
     }
 
+    val latestQueueIndices by rememberUpdatedState(queueIndices)
+
     DisposableEffect(controller) {
 
         val listener = object : Player.Listener {
@@ -431,7 +437,7 @@ fun PurePlayerScreen() {
                 val queuePosition =
                     controller?.currentMediaItemIndex ?: -1
 
-                current = queueIndices.getOrNull(queuePosition) ?: -1
+                current = latestQueueIndices.getOrNull(queuePosition) ?: -1
             }
         }
 
@@ -502,7 +508,6 @@ fun PurePlayerScreen() {
         }
     }
 
-    // Starter afspilning med en bestemt kø.
     fun playTrackInQueue(
         index: Int,
         requestedQueue: List<Int>
@@ -512,7 +517,6 @@ fun PurePlayerScreen() {
 
         if (index !in tracks.indices) return
 
-        // Fjern ugyldige indeks og undgå dubletter.
         val validQueue = requestedQueue
             .distinct()
             .filter { it in tracks.indices }
@@ -520,7 +524,6 @@ fun PurePlayerScreen() {
         if (index !in validQueue) return
 
         val queuePosition = validQueue.indexOf(index)
-
         queueIndices = validQueue
         current = index
 
@@ -543,7 +546,6 @@ fun PurePlayerScreen() {
             .apply()
     }
 
-    // Almindelig afspilning fra fanen Numre.
     fun playTrack(index: Int) {
         playTrackInQueue(
             index,
@@ -564,9 +566,7 @@ fun PurePlayerScreen() {
                     database
                 )
 
-                // Et opdateret bibliotek starter med hele biblioteket som kø.
                 queueIndices = tracks.indices.toList()
-
                 libraryLoaded = true
 
             } catch (_: Exception) {
@@ -599,6 +599,59 @@ fun PurePlayerScreen() {
     }
 
     MaterialTheme(colorScheme = darkColorScheme()) {
+
+        BackHandler {
+            when {
+                selectedAlbumKey != null -> {
+                    selectedAlbumKey = null
+                }
+
+                selectedArtist != null -> {
+                    selectedArtist = null
+                }
+
+                selectedTab != 0 -> {
+                    selectedTab = 0
+                }
+
+                else -> {
+                    showExitDialog = true
+                }
+            }
+        }
+
+        if (showExitDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showExitDialog = false
+                },
+                title = {
+                    Text("Luk PurePlayer?")
+                },
+                text = {
+                    Text("Er du sikker på, at du vil lukke PurePlayer?")
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showExitDialog = false
+                            (context as? Activity)?.finish()
+                        }
+                    ) {
+                        Text("Ja")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showExitDialog = false
+                        }
+                    ) {
+                        Text("Nej")
+                    }
+                }
+            )
+        }
 
         Scaffold(
 
@@ -660,7 +713,6 @@ fun PurePlayerScreen() {
 
                 when (selectedTab) {
 
-                    // MUSIK
                     0 -> {
 
                         Text("Din musik. Din telefon. Ingen abonnementer.")
@@ -773,7 +825,6 @@ fun PurePlayerScreen() {
                             it.key == selectedAlbumKey
                         }
 
-                        // ALBUMMETS NUMRE
                         if (selectedAlbumKey != null &&
                             selectedAlbum != null
                         ) {
@@ -828,8 +879,6 @@ fun PurePlayerScreen() {
                                         it.uri == track.uri
                                     }
 
-                                    // Hvis albummet er åbnet fra en kunstner,
-                                    // bruger vi alle kunstnerens albummer som kø.
                                     val artistQueue = if (selectedArtist != null) {
 
                                         artistGroups
@@ -913,7 +962,6 @@ fun PurePlayerScreen() {
                                 }
                             }
 
-                        // KUNSTNERENS ALBUMMER
                         } else if (selectedArtist != null) {
 
                             TextButton(
@@ -982,7 +1030,6 @@ fun PurePlayerScreen() {
 
                             when (libraryView) {
 
-                                // NUMRE
                                 0 -> {
 
                                     LazyColumn(
@@ -1038,7 +1085,6 @@ fun PurePlayerScreen() {
                                     }
                                 }
 
-                                // ALBUM
                                 1 -> {
 
                                     LazyColumn(
@@ -1095,7 +1141,6 @@ fun PurePlayerScreen() {
                                     }
                                 }
 
-                                // KUNSTNERE
                                 2 -> {
 
                                     LazyColumn(
@@ -1146,7 +1191,6 @@ fun PurePlayerScreen() {
                         }
                     }
 
-                    // AFSPILLER
                     1 -> {
 
                         Spacer(Modifier.height(14.dp))
@@ -1320,7 +1364,6 @@ fun PurePlayerScreen() {
                         }
                     }
 
-                    // EQUALIZER
                     2 -> {
 
                         Spacer(Modifier.height(24.dp))
