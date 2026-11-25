@@ -724,6 +724,24 @@ fun PurePlayerScreen() {
         )
     }
 
+    // Shuffle: blander den valgte kø og starter på første tilfældige nummer.
+    fun shuffleQueue(requestedQueue: List<Int>) {
+
+        val shuffledQueue = requestedQueue
+            .distinct()
+            .filter { it in tracks.indices }
+            .shuffled()
+
+        if (shuffledQueue.isEmpty()) return
+
+        playTrackInQueue(
+            shuffledQueue.first(),
+            shuffledQueue
+        )
+
+        selectedTab = 1
+    }
+
     fun updateLibrary(folderUri: Uri) {
 
         scope.launch {
@@ -939,6 +957,34 @@ fun PurePlayerScreen() {
                                         Icons.Default.Refresh,
                                         contentDescription = "Opdater bibliotek"
                                     )
+                                }
+                            }
+
+                            Spacer(Modifier.height(8.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+
+                                Button(
+                                    onClick = {
+                                        shuffleQueue(tracks.indices.toList())
+                                    },
+                                    enabled = tracks.isNotEmpty() && !loading,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Shuffle mappe")
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        shuffleQueue(tracks.indices.toList())
+                                    },
+                                    enabled = tracks.isNotEmpty() && !loading,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Shuffle alle")
                                 }
                             }
                         }
@@ -1157,6 +1203,26 @@ fun PurePlayerScreen() {
                                 .firstOrNull {
                                     it.name == selectedArtist
                                 }?.albums ?: emptyList()
+
+                            val artistQueue = artistAlbums.flatMap { album ->
+                                album.tracks.map { albumTrack ->
+                                    tracks.indexOfFirst {
+                                        it.uri == albumTrack.uri
+                                    }
+                                }
+                            }.filter { it >= 0 }
+
+                            Button(
+                                onClick = {
+                                    shuffleQueue(artistQueue)
+                                },
+                                enabled = artistQueue.isNotEmpty(),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Shuffle kunstner")
+                            }
+
+                            Spacer(Modifier.height(8.dp))
 
                             LazyColumn(
                                 modifier = Modifier.weight(1f)
