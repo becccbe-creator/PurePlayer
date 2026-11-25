@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.*
@@ -379,6 +380,10 @@ fun PurePlayerScreen() {
         mutableStateOf(false)
     }
 
+    var shuffleEnabled by remember {
+        mutableStateOf(false)
+    }
+
     var loading by remember {
         mutableStateOf(false)
     }
@@ -546,6 +551,12 @@ fun PurePlayerScreen() {
                 playing = playWhenReady
             }
 
+            override fun onShuffleModeEnabledChanged(
+                shuffleModeEnabled: Boolean
+            ) {
+                shuffleEnabled = shuffleModeEnabled
+            }
+
             override fun onPlaybackStateChanged(
                 playbackState: Int
             ) {
@@ -581,6 +592,8 @@ fun PurePlayerScreen() {
                 playing = player.playWhenReady &&
                     player.playbackState != Player.STATE_ENDED
 
+                shuffleEnabled = player.shuffleModeEnabled
+
                 updateCurrentFromPlayer(player)
             }
         }
@@ -590,6 +603,8 @@ fun PurePlayerScreen() {
         controller?.let {
             playing = it.playWhenReady &&
                 it.playbackState != Player.STATE_ENDED
+
+            shuffleEnabled = it.shuffleModeEnabled
 
             updateCurrentFromPlayer(it)
         }
@@ -724,7 +739,6 @@ fun PurePlayerScreen() {
         )
     }
 
-    // Shuffle: blander den valgte kø og starter på første tilfældige nummer.
     fun shuffleQueue(requestedQueue: List<Int>) {
 
         val shuffledQueue = requestedQueue
@@ -1531,6 +1545,50 @@ fun PurePlayerScreen() {
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
+
+                        Spacer(Modifier.height(14.dp))
+
+                        Button(
+                            onClick = {
+                                controller?.let { player ->
+                                    player.shuffleModeEnabled =
+                                        !player.shuffleModeEnabled
+
+                                    shuffleEnabled =
+                                        player.shuffleModeEnabled
+                                }
+                            },
+                            enabled = controller != null &&
+                                queueIndices.isNotEmpty(),
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (shuffleEnabled) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                },
+                                contentColor = if (shuffleEnabled) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        ) {
+                            Icon(
+                                Icons.Default.Shuffle,
+                                contentDescription = null
+                            )
+
+                            Spacer(Modifier.width(8.dp))
+
+                            Text(
+                                if (shuffleEnabled) {
+                                    "Shuffle er slået til"
+                                } else {
+                                    "Shuffle er slået fra"
+                                }
+                            )
+                        }
 
                         Spacer(Modifier.height(14.dp))
 
