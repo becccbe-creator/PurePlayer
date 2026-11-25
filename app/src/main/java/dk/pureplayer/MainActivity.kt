@@ -1663,25 +1663,7 @@ fun PurePlayerScreen() {
                     }
 
                     2 -> {
-
-                        Spacer(Modifier.height(24.dp))
-
-                        Text(
-                            "10-BÅNDS EQUALIZER",
-                            style = MaterialTheme.typography.titleLarge
-                        )
-
-                        Spacer(Modifier.height(18.dp))
-
-                        Text("Equalizeren er under opbygning.")
-
-                        Spacer(Modifier.height(8.dp))
-
-                        Text(
-                            "Vi kobler de 10 frekvensbånd direkte " +
-                            "til lydmotoren i næste trin. " +
-                            "Indtil da ændres lyden ikke."
-                        )
+                        EqualizerScreen()
                     }
                 }
             }
