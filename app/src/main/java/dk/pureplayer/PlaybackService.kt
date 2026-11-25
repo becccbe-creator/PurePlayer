@@ -14,9 +14,8 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import dk.pureplayer.audio.TenBandEqualizer
-import java.io.BufferedReader
+import java.io.File
 import java.io.FileInputStream
-import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -41,32 +40,44 @@ class PlaybackService : MediaSessionService() {
     private var serverThread: Thread? = null
     private var connectionPool: ExecutorService? = null
 
-    private val musicFiles = ConcurrentHashMap<String, Uri>()
+    /**
+     * En stream kan enten være en original SAF-fil
+     * eller en færdigbehandlet Cast-fil.
+     */
+    private data class StreamSource(
+        val originalUri: Uri,
+        val originalFileUri: Uri? = null,
+        val file: File? = null
+    )
+
+    private val musicFiles =
+        ConcurrentHashMap<String, StreamSource>()
 
     override fun onCreate() {
         super.onCreate()
 
         activeInstance = this
 
-        val renderersFactory = object : DefaultRenderersFactory(this) {
+        val renderersFactory =
+            object : DefaultRenderersFactory(this) {
 
-            override fun buildAudioSink(
-                context: Context,
-                enableFloatOutput: Boolean,
-                enableAudioOutputPlaybackParams: Boolean
-            ): AudioSink? {
+                override fun buildAudioSink(
+                    context: Context,
+                    enableFloatOutput: Boolean,
+                    enableAudioOutputPlaybackParams: Boolean
+                ): AudioSink? {
 
-                return DefaultAudioSink.Builder(context)
-                    .setEnableFloatOutput(false)
-                    .setEnableAudioOutputPlaybackParameters(
-                        enableAudioOutputPlaybackParams
-                    )
-                    .setAudioProcessors(
-                        arrayOf<AudioProcessor>(equalizer)
-                    )
-                    .build()
+                    return DefaultAudioSink.Builder(context)
+                        .setEnableFloatOutput(false)
+                        .setEnableAudioOutputPlaybackParameters(
+                            enableAudioOutputPlaybackParams
+                        )
+                        .setAudioProcessors(
+                            arrayOf<AudioProcessor>(equalizer)
+                        )
+                        .build()
+                }
             }
-        }
 
         val exoPlayer = ExoPlayer.Builder(
             this,
@@ -79,7 +90,10 @@ class PlaybackService : MediaSessionService() {
             .setLocalPlayer(exoPlayer)
             .build()
 
-        mediaSession = MediaSession.Builder(this, castPlayer).build()
+        mediaSession = MediaSession.Builder(
+            this,
+            castPlayer
+        ).build()
 
         startMusicServer()
     }
@@ -88,20 +102,61 @@ class PlaybackService : MediaSessionService() {
         controllerInfo: MediaSession.ControllerInfo
     ): MediaSession? = mediaSession
 
+    /**
+     * Opretter stream-adresse til en original SAF-fil.
+     */
     private fun createStreamUrl(uri: Uri): String? {
         val port = serverSocket?.localPort ?: return null
         val ipAddress = getLocalWifiAddress() ?: return null
 
         val token = UUID.randomUUID().toString()
-        musicFiles[token] = uri
+
+        musicFiles[token] = StreamSource(
+            originalUri = uri,
+            originalFileUri = uri
+        )
 
         return "http://$ipAddress:$port/stream/$token"
     }
 
+    /**
+     * Registrerer en EQ-behandlet MP4-fil til Cast.
+     *
+     * originalUri bruges til at identificere det
+     * oprindelige musiknummer i PurePlayer.
+     */
+    private fun createCastStreamUrl(
+        file: File,
+        originalUri: Uri
+    ): String? {
+
+        if (!file.exists() || !file.isFile || file.length() <= 0L) {
+            return null
+        }
+
+        val port = serverSocket?.localPort ?: return null
+        val ipAddress = getLocalWifiAddress() ?: return null
+
+        val token = UUID.randomUUID().toString()
+
+        musicFiles[token] = StreamSource(
+            originalUri = originalUri,
+            file = file
+        )
+
+        return "http://$ipAddress:$port/stream/$token"
+    }
+
+    /**
+     * Finder originalfilen ud fra en stream-adresse.
+     */
     private fun findOriginalUri(streamUrl: String): Uri? {
         return try {
-            val token = Uri.parse(streamUrl).lastPathSegment ?: return null
-            musicFiles[token]
+            val token = Uri.parse(streamUrl).lastPathSegment
+                ?: return null
+
+            musicFiles[token]?.originalUri
+
         } catch (_: Exception) {
             null
         }
@@ -115,12 +170,14 @@ class PlaybackService : MediaSessionService() {
                 InetAddress.getByName("0.0.0.0")
             )
 
-            connectionPool = Executors.newFixedThreadPool(4)
+            connectionPool =
+                Executors.newFixedThreadPool(4)
 
             serverThread = Thread {
                 while (!Thread.currentThread().isInterrupted) {
                     try {
-                        val socket = serverSocket?.accept() ?: break
+                        val socket =
+                            serverSocket?.accept() ?: break
 
                         connectionPool?.execute {
                             handleConnection(socket)
@@ -160,7 +217,8 @@ class PlaybackService : MediaSessionService() {
             addresses
                 .filterIsInstance<Inet4Address>()
                 .firstOrNull {
-                    !it.isLoopbackAddress && it.isSiteLocalAddress
+                    !it.isLoopbackAddress &&
+                    it.isSiteLocalAddress
                 }
                 ?.hostAddress
 
@@ -174,12 +232,8 @@ class PlaybackService : MediaSessionService() {
             try {
                 client.soTimeout = 15000
 
-                val reader = BufferedReader(
-                    InputStreamReader(
-                        client.getInputStream(),
-                        Charsets.UTF_8
-                    )
-                )
+                val reader = client.getInputStream()
+                    .bufferedReader(Charsets.UTF_8)
 
                 val requestLine = reader.readLine() ?: return
                 val requestParts = requestLine.split(" ")
@@ -196,9 +250,12 @@ class PlaybackService : MediaSessionService() {
                     if (line.isEmpty()) break
 
                     val separator = line.indexOf(':')
+
                     if (separator > 0) {
                         headers[
-                            line.substring(0, separator).trim().lowercase()
+                            line.substring(0, separator)
+                                .trim()
+                                .lowercase()
                         ] = line.substring(separator + 1).trim()
                     }
                 }
@@ -225,10 +282,13 @@ class PlaybackService : MediaSessionService() {
                     return
                 }
 
-                val token = path.removePrefix("/stream/").substringBefore("?")
-                val uri = musicFiles[token]
+                val token = path
+                    .removePrefix("/stream/")
+                    .substringBefore("?")
 
-                if (uri == null) {
+                val source = musicFiles[token]
+
+                if (source == null) {
                     sendResponse(
                         client.getOutputStream(),
                         404,
@@ -240,48 +300,109 @@ class PlaybackService : MediaSessionService() {
                 }
 
                 streamFile(
-                    this,
-                    uri,
-                    headers["range"],
-                    method == "HEAD",
-                    client.getOutputStream()
+                    source = source,
+                    rangeHeader = headers["range"],
+                    headOnly = method == "HEAD",
+                    output = client.getOutputStream()
                 )
 
             } catch (_: Exception) {
-                // Klienten kan afbryde forbindelsen under streaming.
+                // Klienten kan afbryde forbindelsen.
             }
         }
     }
 
+    /**
+     * Serverer enten en original SAF-fil eller en
+     * færdigbehandlet MP4-fil.
+     *
+     * Understøtter HTTP Range, så Cast kan søge
+     * frem og tilbage i musikken.
+     */
     private fun streamFile(
-        context: Context,
-        uri: Uri,
+        source: StreamSource,
         rangeHeader: String?,
         headOnly: Boolean,
         output: OutputStream
     ) {
+
         var descriptor: AssetFileDescriptor? = null
 
         try {
-            descriptor = context.contentResolver.openAssetFileDescriptor(uri, "r")
+            val file = source.file
 
-            if (descriptor == null) {
-                sendResponse(output, 404, "Not Found", "text/plain", 0)
-                return
-            }
+            val fileLength: Long
+            val startOffset: Long
+            val mimeType: String
 
-            val startOffset = descriptor.startOffset
+            if (file != null) {
 
-            val fileLength = if (
-                descriptor.length != AssetFileDescriptor.UNKNOWN_LENGTH
-            ) {
-                descriptor.length
+                if (!file.exists() || !file.isFile) {
+                    sendResponse(
+                        output,
+                        404,
+                        "Not Found",
+                        "text/plain",
+                        0
+                    )
+                    return
+                }
+
+                fileLength = file.length()
+                startOffset = 0L
+                mimeType = "audio/mp4"
+
             } else {
-                descriptor.parcelFileDescriptor.statSize - startOffset
+
+                val uri = source.originalFileUri
+                    ?: source.originalUri
+
+                descriptor = contentResolver
+                    .openAssetFileDescriptor(uri, "r")
+
+                if (descriptor == null) {
+                    sendResponse(
+                        output,
+                        404,
+                        "Not Found",
+                        "text/plain",
+                        0
+                    )
+                    return
+                }
+
+                startOffset = descriptor.startOffset
+
+                fileLength = if (
+                    descriptor.length !=
+                    AssetFileDescriptor.UNKNOWN_LENGTH
+                ) {
+                    descriptor.length
+                } else {
+                    descriptor.parcelFileDescriptor.statSize -
+                    startOffset
+                }
+
+                mimeType = contentResolver.getType(uri)
+                    ?: when (
+                        uri.lastPathSegment
+                            ?.substringAfterLast(".", "")
+                            ?.lowercase()
+                    ) {
+                        "mp3" -> "audio/mpeg"
+                        "flac" -> "audio/flac"
+                        else -> "application/octet-stream"
+                    }
             }
 
-            if (fileLength <= 0) {
-                sendResponse(output, 500, "File Size Unknown", "text/plain", 0)
+            if (fileLength <= 0L) {
+                sendResponse(
+                    output,
+                    500,
+                    "File Size Unknown",
+                    "text/plain",
+                    0
+                )
                 return
             }
 
@@ -290,6 +411,7 @@ class PlaybackService : MediaSessionService() {
             var partial = false
 
             if (rangeHeader != null) {
+
                 val match = Regex("""bytes=(\d*)-(\d*)""")
                     .matchEntire(rangeHeader)
 
@@ -307,6 +429,7 @@ class PlaybackService : MediaSessionService() {
                 }
 
                 if (first.isEmpty()) {
+
                     val suffixLength = last.toLongOrNull()
 
                     if (suffixLength == null || suffixLength <= 0) {
@@ -314,9 +437,14 @@ class PlaybackService : MediaSessionService() {
                         return
                     }
 
-                    start = (fileLength - suffixLength).coerceAtLeast(0)
+                    start = (
+                        fileLength - suffixLength
+                    ).coerceAtLeast(0)
+
                 } else {
+
                     start = first.toLongOrNull() ?: -1L
+
                     end = if (last.isEmpty()) {
                         fileLength - 1
                     } else {
@@ -324,7 +452,11 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
 
-                if (start < 0 || end < start || start >= fileLength) {
+                if (
+                    start < 0 ||
+                    end < start ||
+                    start >= fileLength
+                ) {
                     sendRangeError(output, fileLength)
                     return
                 }
@@ -335,19 +467,12 @@ class PlaybackService : MediaSessionService() {
 
             val contentLength = end - start + 1
 
-            val mimeType = context.contentResolver.getType(uri)
-                ?: when (
-                    uri.lastPathSegment
-                        ?.substringAfterLast(".", "")
-                        ?.lowercase()
-                ) {
-                    "mp3" -> "audio/mpeg"
-                    "flac" -> "audio/flac"
-                    else -> "application/octet-stream"
-                }
-
             val status = if (partial) 206 else 200
-            val statusText = if (partial) "Partial Content" else "OK"
+            val statusText = if (partial) {
+                "Partial Content"
+            } else {
+                "OK"
+            }
 
             val header = buildString {
                 append("HTTP/1.1 $status $statusText\r\n")
@@ -357,7 +482,10 @@ class PlaybackService : MediaSessionService() {
                 append("Connection: close\r\n")
 
                 if (partial) {
-                    append("Content-Range: bytes $start-$end/$fileLength\r\n")
+                    append(
+                        "Content-Range: bytes " +
+                        "$start-$end/$fileLength\r\n"
+                    )
                 }
 
                 append("Access-Control-Allow-Origin: *\r\n")
@@ -369,26 +497,35 @@ class PlaybackService : MediaSessionService() {
 
             if (headOnly) return
 
-            FileInputStream(descriptor.fileDescriptor).use { input ->
-                input.channel.position(startOffset + start)
+            if (file != null) {
 
-                val buffer = ByteArray(32 * 1024)
-                var remaining = contentLength
+                FileInputStream(file).use { input ->
+                    input.channel.position(start)
 
-                while (remaining > 0) {
-                    val bytesToRead = minOf(
-                        buffer.size.toLong(),
-                        remaining
-                    ).toInt()
-
-                    val count = input.read(buffer, 0, bytesToRead)
-                    if (count <= 0) break
-
-                    output.write(buffer, 0, count)
-                    remaining -= count
+                    copyStream(
+                        input = input,
+                        output = output,
+                        contentLength = contentLength
+                    )
                 }
 
-                output.flush()
+            } else {
+
+                val activeDescriptor = descriptor
+                    ?: return
+
+                FileInputStream(
+                    activeDescriptor.fileDescriptor
+                ).use { input ->
+
+                    input.channel.position(startOffset + start)
+
+                    copyStream(
+                        input = input,
+                        output = output,
+                        contentLength = contentLength
+                    )
+                }
             }
 
         } catch (_: Exception) {
@@ -399,6 +536,35 @@ class PlaybackService : MediaSessionService() {
             } catch (_: Exception) {
             }
         }
+    }
+
+    private fun copyStream(
+        input: FileInputStream,
+        output: OutputStream,
+        contentLength: Long
+    ) {
+        val buffer = ByteArray(32 * 1024)
+        var remaining = contentLength
+
+        while (remaining > 0) {
+            val bytesToRead = minOf(
+                buffer.size.toLong(),
+                remaining
+            ).toInt()
+
+            val count = input.read(
+                buffer,
+                0,
+                bytesToRead
+            )
+
+            if (count <= 0) break
+
+            output.write(buffer, 0, count)
+            remaining -= count
+        }
+
+        output.flush()
     }
 
     private fun sendResponse(
@@ -436,12 +602,22 @@ class PlaybackService : MediaSessionService() {
 
             output.write(response.toByteArray(Charsets.UTF_8))
             output.flush()
+
         } catch (_: Exception) {
         }
     }
 
     override fun onDestroy() {
         activeInstance = null
+
+        // Slet kun midlertidige Cast-filer.
+        musicFiles.values.forEach { source ->
+            try {
+                source.file?.delete()
+            } catch (_: Exception) {
+            }
+        }
+
         musicFiles.clear()
 
         try {
@@ -450,6 +626,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         serverSocket = null
+
         serverThread?.interrupt()
         serverThread = null
 
@@ -466,14 +643,35 @@ class PlaybackService : MediaSessionService() {
     }
 
     companion object {
+
         @Volatile
         private var activeInstance: PlaybackService? = null
 
+        /**
+         * Eksisterende metode til originale musikfiler.
+         */
         @JvmStatic
         fun getStreamUrl(uri: Uri): String? {
             return activeInstance?.createStreamUrl(uri)
         }
 
+        /**
+         * Ny metode til EQ-behandlede Cast-filer.
+         */
+        @JvmStatic
+        fun getCastStreamUrl(
+            file: File,
+            originalUri: Uri
+        ): String? {
+            return activeInstance?.createCastStreamUrl(
+                file,
+                originalUri
+            )
+        }
+
+        /**
+         * Finder original URI fra både gamle og nye streams.
+         */
         @JvmStatic
         fun getOriginalUri(streamUrl: String): Uri? {
             return activeInstance?.findOriginalUri(streamUrl)
@@ -490,8 +688,14 @@ class PlaybackService : MediaSessionService() {
         }
 
         @JvmStatic
-        fun setEqualizerBandGain(index: Int, gainDb: Float) {
-            activeInstance?.equalizer?.setBandGain(index, gainDb)
+        fun setEqualizerBandGain(
+            index: Int,
+            gainDb: Float
+        ) {
+            activeInstance?.equalizer?.setBandGain(
+                index,
+                gainDb
+            )
         }
 
         @JvmStatic
