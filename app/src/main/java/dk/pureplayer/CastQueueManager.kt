@@ -4,36 +4,42 @@ package dk.pureplayer
 import android.content.Context
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import dk.pureplayer.audio.CastAudioTransformer
 
-/**
- * Håndterer konvertering af musik til Google Cast.
- *
- * Musikken bliver behandlet med PurePlayers equalizer,
- * inden den sendes videre til Cast-enheden.
- */
 class CastQueueManager(
     context: Context,
     private val controller: MediaController,
     private val onError: (String) -> Unit = {}
 ) {
-
-    private val transformer = CastAudioTransformer(
-        context.applicationContext
-    )
+    private val transformer =
+        CastAudioTransformer(context.applicationContext)
 
     private var generation = 0
     private var queue = emptyList<LibraryTrack>()
     private var nextPosition = 0
     private var firstItemLoaded = false
+    private var waitingForNextItem = false
 
-    /**
-     * Starter en Cast-kø.
-     *
-     * startTrackIndex er nummerets position i tracks.
-     * queueIndices indeholder rækkefølgen, der skal afspilles.
-     */
+    private val playerListener = object : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_ENDED &&
+                firstItemLoaded &&
+                nextPosition < queue.size &&
+                !controller.hasNextMediaItem()
+            ) {
+                // Den aktuelle sang er slut, men næste sang
+                // er stadig ved at blive konverteret.
+                waitingForNextItem = true
+            }
+        }
+    }
+
+    init {
+        controller.addListener(playerListener)
+    }
+
     fun playQueue(
         tracks: List<LibraryTrack>,
         queueIndices: List<Int>,
@@ -47,6 +53,11 @@ class CastQueueManager(
             .distinct()
             .filter { it in tracks.indices }
 
+        if (validQueue.isEmpty()) {
+            onError("Afspilningskøen er tom.")
+            return
+        }
+
         val startPosition = validQueue.indexOf(startTrackIndex)
 
         if (startPosition < 0) {
@@ -54,23 +65,19 @@ class CastQueueManager(
             return
         }
 
-        // Start med den valgte sang og fortsæt derefter i køens rækkefølge.
-        val orderedIndices = validQueue.drop(startPosition) +
+        val orderedIndices =
+            validQueue.drop(startPosition) +
             validQueue.take(startPosition)
 
         queue = orderedIndices.map { tracks[it] }
         nextPosition = 0
         firstItemLoaded = false
+        waitingForNextItem = false
 
         transformNext()
     }
 
-    /**
-     * Konverterer næste sang.
-     * Der behandles kun én sang ad gangen.
-     */
     private fun transformNext() {
-
         if (nextPosition >= queue.size) return
 
         val requestGeneration = generation
@@ -89,16 +96,16 @@ class CastQueueManager(
             object : CastAudioTransformer.Callback {
 
                 override fun onSuccess(file: java.io.File) {
-
                     if (requestGeneration != generation) {
                         file.delete()
                         return
                     }
 
-                    val streamUrl = PlaybackService.getCastStreamUrl(
-                        file,
-                        track.uri
-                    )
+                    val streamUrl =
+                        PlaybackService.getCastStreamUrl(
+                            file,
+                            track.uri
+                        )
 
                     if (streamUrl.isNullOrBlank()) {
                         onError("Kunne ikke oprette Cast-stream.")
@@ -120,30 +127,28 @@ class CastQueueManager(
                         .setMediaMetadata(metadata)
                         .build()
 
-                    if (!firstItemLoaded) {
+                    val shouldStartNewItem =
+                        !firstItemLoaded ||
+                        waitingForNextItem ||
+                        controller.playbackState == Player.STATE_ENDED
 
+                    if (shouldStartNewItem) {
                         firstItemLoaded = true
+                        waitingForNextItem = false
 
                         controller.setMediaItem(mediaItem)
                         controller.prepare()
                         controller.play()
-
                     } else {
-
                         controller.addMediaItem(mediaItem)
                     }
 
                     nextPosition++
-
-                    // Gør næste sang klar i baggrunden.
                     transformNext()
                 }
 
                 override fun onError(message: String) {
-
-                    if (requestGeneration != generation) {
-                        return
-                    }
+                    if (requestGeneration != generation) return
 
                     onError(
                         "Kunne ikke behandle '${track.title}': $message"
@@ -156,9 +161,6 @@ class CastQueueManager(
         )
     }
 
-    /**
-     * Stopper igangværende konvertering og gør køen ugyldig.
-     */
     fun cancel() {
         generation++
         transformer.cancelAll()
@@ -166,5 +168,11 @@ class CastQueueManager(
         queue = emptyList()
         nextPosition = 0
         firstItemLoaded = false
+        waitingForNextItem = false
+    }
+
+    fun release() {
+        cancel()
+        controller.removeListener(playerListener)
     }
 }
