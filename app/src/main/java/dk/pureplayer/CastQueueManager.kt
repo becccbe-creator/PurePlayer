@@ -23,14 +23,14 @@ class CastQueueManager(
     private var waitingForNextItem = false
 
     private val playerListener = object : Player.Listener {
+
         override fun onPlaybackStateChanged(playbackState: Int) {
-            if (playbackState == Player.STATE_ENDED &&
+            if (
+                playbackState == Player.STATE_ENDED &&
                 firstItemLoaded &&
                 nextPosition < queue.size &&
                 !controller.hasNextMediaItem()
             ) {
-                // Den aktuelle sang er slut, men næste sang
-                // er stadig ved at blive konverteret.
                 waitingForNextItem = true
             }
         }
@@ -54,14 +54,14 @@ class CastQueueManager(
             .filter { it in tracks.indices }
 
         if (validQueue.isEmpty()) {
-            onError("Afspilningskøen er tom.")
+            this.onError("Afspilningskøen er tom.")
             return
         }
 
         val startPosition = validQueue.indexOf(startTrackIndex)
 
         if (startPosition < 0) {
-            onError("Sangen findes ikke i afspilningskøen.")
+            this.onError("Sangen findes ikke i afspilningskøen.")
             return
         }
 
@@ -108,7 +108,9 @@ class CastQueueManager(
                         )
 
                     if (streamUrl.isNullOrBlank()) {
-                        onError("Kunne ikke oprette Cast-stream.")
+                        this@CastQueueManager.onError(
+                            "Kunne ikke oprette Cast-stream."
+                        )
                         nextPosition++
                         transformNext()
                         return
@@ -150,7 +152,7 @@ class CastQueueManager(
                 override fun onError(message: String) {
                     if (requestGeneration != generation) return
 
-                    onError(
+                    this@CastQueueManager.onError(
                         "Kunne ikke behandle '${track.title}': $message"
                     )
 
