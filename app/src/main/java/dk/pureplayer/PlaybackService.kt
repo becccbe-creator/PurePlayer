@@ -1,14 +1,19 @@
 
 package dk.pureplayer
 
-import android.net.Uri
-import androidx.media3.cast.CastPlayer
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
 import android.content.Context
 import android.content.res.AssetFileDescriptor
+import android.net.Uri
+import androidx.media3.cast.CastPlayer
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
+import dk.pureplayer.audio.TenBandEqualizer
 import java.io.BufferedReader
 import java.io.FileInputStream
 import java.io.InputStreamReader
@@ -30,6 +35,8 @@ class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private var localPlayer: ExoPlayer? = null
 
+    private val equalizer = TenBandEqualizer()
+
     private var serverSocket: ServerSocket? = null
     private var serverThread: Thread? = null
     private var connectionPool: ExecutorService? = null
@@ -41,7 +48,31 @@ class PlaybackService : MediaSessionService() {
 
         activeInstance = this
 
-        val exoPlayer = ExoPlayer.Builder(this).build()
+        val renderersFactory = object : DefaultRenderersFactory(this) {
+
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioOutputPlaybackParams: Boolean
+            ): AudioSink? {
+
+                return DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(false)
+                    .setEnableAudioOutputPlaybackParameters(
+                        enableAudioOutputPlaybackParams
+                    )
+                    .setAudioProcessors(
+                        arrayOf<AudioProcessor>(equalizer)
+                    )
+                    .build()
+            }
+        }
+
+        val exoPlayer = ExoPlayer.Builder(
+            this,
+            renderersFactory
+        ).build()
+
         localPlayer = exoPlayer
 
         val castPlayer = CastPlayer.Builder(this)
@@ -446,6 +477,32 @@ class PlaybackService : MediaSessionService() {
         @JvmStatic
         fun getOriginalUri(streamUrl: String): Uri? {
             return activeInstance?.findOriginalUri(streamUrl)
+        }
+
+        @JvmStatic
+        fun setEqualizerEnabled(enabled: Boolean) {
+            activeInstance?.equalizer?.setEnabled(enabled)
+        }
+
+        @JvmStatic
+        fun isEqualizerEnabled(): Boolean {
+            return activeInstance?.equalizer?.isEnabled() ?: true
+        }
+
+        @JvmStatic
+        fun setEqualizerBandGain(index: Int, gainDb: Float) {
+            activeInstance?.equalizer?.setBandGain(index, gainDb)
+        }
+
+        @JvmStatic
+        fun setEqualizerGains(gains: FloatArray) {
+            activeInstance?.equalizer?.setAllGains(gains)
+        }
+
+        @JvmStatic
+        fun getEqualizerBandGains(): FloatArray {
+            return activeInstance?.equalizer?.getBandGains()
+                ?: FloatArray(TenBandEqualizer.BAND_COUNT)
         }
     }
 }
